@@ -14,6 +14,7 @@ BRIDGE = 'qa-only-bridge-sentinel-48c72'
 
 
 def build(path: str):
+    os.environ['AI_ENABLED'] = 'false'
     app = create_app(path, BRIDGE, ADMIN, target_group_id='mock-legit-group')
     with TestClient(app) as client:
         admin = {'X-API-Key': ADMIN}
@@ -40,11 +41,12 @@ def build(path: str):
                 job = client.post('/deliveries/claim', headers=bridge).json()
                 if delivery == 'sent':
                     client.post(f"/deliveries/{job['delivery_id']}/sent", headers=bridge,
-                        json={'claim_token':job['claim_token'], 'sent_message_id':'mock-only-message'}).raise_for_status()
+                        json={'claim_token':job['claim_token'], 'sent_message_id':'mock-only-message', 'transport_mode':'mock'}).raise_for_status()
                 else:
                     client.post(f"/deliveries/{job['delivery_id']}/failure", headers=bridge,
                         json={'claim_token':job['claim_token'], 'outcome':'unknown' if delivery == 'unknown' else 'not_sent',
-                              'error':'timeout' if delivery == 'unknown' else 'send_rejected'}).raise_for_status()
+                              'error':'timeout' if delivery == 'unknown' else 'send_rejected',
+                              'transport_mode':'mock'}).raise_for_status()
             if status == 'sold':
                 event(f'daban {item}')
 

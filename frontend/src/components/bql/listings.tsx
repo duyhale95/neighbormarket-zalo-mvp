@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { AlertTriangle, ArrowUpRight, Package, RefreshCw, Search } from 'lucide-react';
 import { flagsOf, type Listing } from '@/lib/contracts';
 import { useData } from './use-data';
-import { Empty, money, date, Notice, Status, labels } from './shared';
+import { Empty, money, date, Notice, Status, labels, sourceLabels } from './shared';
 import { ReviewDialog } from './review-dialog';
 export function ListingQueue() {
   const { data, error, loading, refresh } = useData<Listing[]>('listings');
@@ -104,6 +104,7 @@ export function ListingQueue() {
                         <span>
                           <strong>{row.title}</strong>
                           <small>{row.id}</small>
+                          <small>{sourceLabels[row.source_channel || 'legacy']}</small>
                         </span>
                       </div>
                     </td>

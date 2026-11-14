@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowRight, Check, RefreshCw, Send, X } from 'lucide-react';
 import type { Delivery } from '@/lib/contracts';
 import { useData, mutate } from './use-data';
-import { date, Empty, labels, Notice, Status } from './shared';
+import { date, Empty, labels, Notice, Status, evidenceLabels } from './shared';
 function ReconcileDialog({
   delivery,
   onClose,
@@ -156,7 +156,7 @@ export function DeliveryMonitor() {
           <strong>Trạng thái backend không thay thế bằng chứng trên Zalo.</strong>
           <p>
             Connector Zalo thật chưa được xác minh. Delivery “unknown” cần đối soát; hệ thống không
-            tự động gửi lại.
+            tự động gửi lại. Queued chỉ là hàng chờ; sent chỉ ghi nhận ACK, có thể là giả lập.
           </p>
         </div>
       </div>
@@ -217,6 +217,10 @@ export function DeliveryMonitor() {
                     <td className="group-cell">{row.target_group_id}</td>
                     <td>
                       <Status value={row.status} />
+                      <p className="field-help">
+                        {evidenceLabels[row.transport_mode || 'unverified']}
+                      </p>
+                      {row.sent_message_id && <small>ID: {row.sent_message_id}</small>}
                     </td>
                     <td>{row.attempts}</td>
                     <td className="date-cell">

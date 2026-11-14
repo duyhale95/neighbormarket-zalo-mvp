@@ -7,6 +7,17 @@ export const statsSchema = z.object({
   sold: z.number(),
   sent: z.number(),
 });
+export const moderationSchema = z.object({
+  risk_score: z.number().min(0).max(1).nullable(),
+  risk_level: z.enum(['low', 'attention', 'high']),
+  categories: z.array(z.string()),
+  reason: z.string(),
+  policy_version: z.string(),
+  model_version: z.string(),
+  requires_review: z.literal(true),
+  ai_status: z.enum(['not_requested', 'unavailable', 'advisory']),
+  score_calibrated: z.literal(false),
+});
 export const listingSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -17,6 +28,8 @@ export const listingSchema = z.object({
   community_id: z.string(),
   created_at: z.string(),
   moderation_flags: z.string(),
+  source_channel: z.enum(['legacy', 'deplao', 'mock']).optional(),
+  moderation: moderationSchema.nullable().optional(),
 });
 export const deliverySchema = z.object({
   id: z.string(),
@@ -29,6 +42,7 @@ export const deliverySchema = z.object({
   sent_message_id: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
+  transport_mode: z.enum(['mock', 'deplao', 'unverified', 'manual']).optional(),
 });
 export type Stats = z.infer<typeof statsSchema>;
 export type Listing = z.infer<typeof listingSchema>;

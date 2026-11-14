@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, Check, X } from 'lucide-react';
 import { flagsOf, type Listing } from '@/lib/contracts';
-import { flagLabels, money, date, Notice, Status } from './shared';
+import { flagLabels, money, date, Notice, Status, sourceLabels, riskLabels } from './shared';
 import { mutate } from './use-data';
 export function ReviewDialog({
   listing,
@@ -22,7 +22,7 @@ export function ReviewDialog({
     dialog.current?.showModal();
   }, []);
   const flags = flagsOf(listing.moderation_flags);
-  const sensitive = flags.includes('sensitive_information');
+  const blocked = flags.some((flag) => ['sensitive_information', 'prohibited'].includes(flag));
   async function confirm() {
     if (!action || !reason.trim() || busy) return;
     setBusy(true);
@@ -110,7 +110,37 @@ export function ReviewDialog({
               <dt>Ngày tạo</dt>
               <dd>{date(listing.created_at)}</dd>
             </div>
+            <div>
+              <dt>Nguồn tin</dt>
+              <dd>{sourceLabels[listing.source_channel || 'legacy']}</dd>
+            </div>
+            <div>
+              <dt>Kết nối Zalo thật</dt>
+              <dd>Chưa xác minh · nguồn tin không phải bằng chứng kết nối live</dd>
+            </div>
           </dl>
+          {listing.moderation ? (
+            <div className="moderation-alert">
+              <AlertTriangle size={20} aria-hidden="true" />
+              <div>
+                <strong>{riskLabels[listing.moderation.risk_level]}</strong>
+                <span>{listing.moderation.reason}</span>
+                <span>Luôn cần BQL duyệt · không có xác suất rủi ro đã hiệu chỉnh.</span>
+                <small>
+                  {listing.moderation.policy_version} · {listing.moderation.model_version} ·{' '}
+                  {listing.moderation.ai_status === 'advisory'
+                    ? 'Tín hiệu AI tư vấn'
+                    : listing.moderation.ai_status === 'unavailable'
+                      ? 'AI không khả dụng'
+                      : 'Kiểm tra bằng luật'}
+                </small>
+              </div>
+            </div>
+          ) : (
+            <p className="field-help">
+              Tin cũ chưa có báo cáo moderation; BQL cần kiểm tra thủ công.
+            </p>
+          )}
           {flags.length > 0 && (
             <div className="moderation-alert">
               <AlertTriangle size={20} />
@@ -122,8 +152,8 @@ export function ReviewDialog({
               </div>
             </div>
           )}
-          {sensitive && (
-            <Notice message="Có dấu hiệu thông tin nhạy cảm. Hãy từ chối và yêu cầu người bán viết lại; backend sẽ chặn phê duyệt." />
+          {blocked && (
+            <Notice message="Có thông tin nhạy cảm hoặc từ khóa hàng cấm. Hãy từ chối và yêu cầu người bán viết lại; backend sẽ chặn phê duyệt." />
           )}
           {listing.status === 'pending' && (
             <>
@@ -185,7 +215,7 @@ export function ReviewDialog({
             <button
               className="button button-navy"
               onClick={() => setAction('approve')}
-              disabled={!reason.trim() || sensitive}
+              disabled={!reason.trim() || blocked}
             >
               Phê duyệt tin
               <Check size={17} />

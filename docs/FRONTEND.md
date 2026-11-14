@@ -163,7 +163,7 @@ as resident data.
 `minimatch` under the TypeScript ESLint parser is overridden to patched 11.0.8
 for advisory GHSA-g3hv-75wg-m249. Lint/build checks exercise the override.
 
-## Demo walkthrough and limits
+## Original UI verification and walkthrough
 
 Verification recorded on 14 November 2026, Windows, Node 24.21.0:
 
@@ -192,4 +192,31 @@ The backend returns at most 100 recent listings/deliveries; UI filters operate
 within those returned records. Refresh is explicit, not realtime streaming.
 There are no personal BQL accounts, resident verification, price-range search,
 image upload or newly implemented Zalo connector. Backend business contracts
-and marketplace code are unchanged by this frontend branch.
+and marketplace code were unchanged by the original UI implementation.
+
+## Partner integration extension
+
+The integration adds optional `source_channel` and `moderation` listing fields,
+plus delivery `transport_mode`, to the existing Zod contracts. Older responses
+remain valid. The BQL details show rule reasons, policy/model version and the
+mandatory human decision, without inventing calibrated risk probabilities.
+Sensitive/prohibited approval remains blocked by the backend. Delivery mode
+distinguishes simulation, an asserted Deplao receipt, unverified legacy ACKs,
+and manual reconciliation. Queued is not proof of sending.
+
+No landing page, logo, global styles, session/auth implementation or BFF routing
+changed. Credentials stay server-side. Latest integration verification: backend
+70/70, frontend 6/6, production HTTP BFF 27/27, TypeScript/lint/format/build pass.
+Browser QA with synthetic data checked 360px/768px/1440px, approval -> queued,
+blocked sensitive content and unknown reconciliation without requeue.
+
+For a preview on separate ports (after `npm run build`):
+
+```powershell
+.\.venv\Scripts\python.exe frontend\tests\preview.py --port 3130 --backend-port 8126
+```
+
+Run from the repository root. This launcher never loads the private runtime
+config. Its database/password are test fixtures, not real resident activity.
+See MENTOR_LIVE_DEMO.md for credentials/startup and DEPLAO_COMPATIBILITY.md for
+the current strict-binding blocker. Real Zalo connection remains unverified.

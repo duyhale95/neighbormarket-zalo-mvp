@@ -98,11 +98,12 @@ snippets upstream: keep its local logs/exports private; do not upload them.
 5. [x] P2: one persistent sender/community conversation, grounded Vietnamese
    parsing, clarification/edit/cancel/confirm, revision checks around AI calls.
 6. [x] P7: full offline mentor demo and security/concurrency regressions.
-7. [ ] P5: optional report/source fields in Zod and current BQL details; no
+7. [x] P5: optional report/source fields in Zod and current BQL details; no
    landing or authentication redesign. Check old schemas and HTTP suite.
 8. [x] P6: deliberately deferred; text only, attachments unsupported, no remote fetch.
-9. [ ] P8: review, docs/config, baseline/regression/build checks, secret scan,
-   logical commits, push only feat/integrate-partner-zalo-workflow.
+9. [x] P8: review, docs/config, baseline/regression/build checks, secret scan,
+   logical commits and integration branch push; UI checkpoints additionally
+   authorized by the user's later instruction (see below).
 
 P1/P4/P3 verification: 52/52 backend tests pass, including new parser, graph,
 publisher and moderation tests. No outbound network/model call in these tests.
@@ -149,3 +150,20 @@ The user subsequently requested phase checkpoints on
 push-only integration-branch restriction for checkpoints. Development continues
 on `feat/integrate-partner-zalo-workflow`; checkpoint pushes use fast-forward
 only, preserving teammate work and the recorded original base SHA.
+
+P5 visual verification used disposable QA records only, isolated Next.js/FastAPI
+ports 3130/8126: login, risk/source details, blocked sensitive approval even with
+a reason, successful normal review -> queued delivery, visible mock receipt,
+and unknown -> failed manual reconciliation without requeue. Desktop 1440px,
+tablet 768px and mobile 360px inspected; no horizontal page overflow. Wide data
+tables retain their existing horizontal scrolling on mobile; dialogs scroll
+vertically. Screenshots are local QA evidence, not real Zalo or resident records.
+No landing components, logo, styles, auth/session or BFF routing were changed.
+
+Final production build and 27 HTTP checks were rerun after the last UI wording
+change and passed. Secret scan compares changed public files against configured
+private values without logging them; no match and no tracked private files.
+Source A, alternative branch and Deplao reference checkouts remain clean. The
+old demo checkout remains untouched. All live checklist rows stay unverified;
+P1/P4 completion refers to the tested offline path and gated graph generator,
+not an operational live connector. Optional image work was intentionally deferred.

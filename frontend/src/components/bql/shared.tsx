@@ -18,7 +18,26 @@ export const flagLabels: Record<string, string> = {
   spam: 'Dấu hiệu spam',
   suspicious: 'Nội dung đáng ngờ',
   ai_suspicious: 'AI đề nghị kiểm tra',
+  prohibited: 'Từ khóa mặt hàng bị cấm',
+  external_link: 'Liên kết ngoài',
+  abnormal_price: 'Giá cần kiểm tra',
   unknown: 'Cờ chưa xác định',
+};
+export const sourceLabels: Record<string, string> = {
+  legacy: 'Bridge / lệnh hiện có',
+  deplao: 'Deplao · Zalo cá nhân',
+  mock: 'Giả lập · không phải Zalo thật',
+};
+export const riskLabels: Record<string, string> = {
+  low: 'Chưa thấy dấu hiệu theo luật demo',
+  attention: 'Có điểm cần BQL xác minh',
+  high: 'Nội dung bị chặn theo chính sách',
+};
+export const evidenceLabels: Record<string, string> = {
+  mock: 'Giả lập · không gửi Zalo thật',
+  deplao: 'Deplao · cần đối chiếu nhóm',
+  unverified: 'Transport chưa xác minh',
+  manual: 'BQL đã đối soát thủ công',
 };
 export function Status({ value }: { value: string }) {
   return (

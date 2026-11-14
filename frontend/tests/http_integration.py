@@ -87,6 +87,10 @@ def run():
                           wrong_response.status_code == 502 and 'Backend từ chối khóa quản trị' in wrong_response.json()['error'])
                 items = browser.get('/api/bql/listings').json()
                 pending = next(row for row in items if row['title'] == 'Ghế công thái học')
+                check('additive source and advisory moderation reach BFF',
+                      pending['source_channel'] == 'legacy' and
+                      pending['moderation']['requires_review'] is True and
+                      pending['moderation']['risk_score'] is None)
                 path = f"/api/bql/listings/{pending['id']}/review"
                 check('cross-site review denied', browser.post(path,headers={'Origin':'https://evil.example'},json={'action':'approve','reason':'test'}).status_code == 403)
                 check('review reason required', browser.post(path,headers=headers,json={'action':'approve','reason':' '}).status_code == 422)
@@ -99,9 +103,15 @@ def run():
                 rejected = next(row for row in items if row['title'] == 'Kệ trang trí')
                 check('real reject succeeds', browser.post(f"/api/bql/listings/{rejected['id']}/review",headers=headers,json={'action':'reject','reason':'Cần viết lại'}).json()['status'] == 'rejected')
                 jobs = browser.get('/api/bql/deliveries').json()
+                check('mock ACK provenance survives BFF validation',
+                      any(row['status'] == 'sent' and row['transport_mode'] == 'mock'
+                          and row['sent_message_id'].startswith('mock-') for row in jobs))
                 unknown = next(row for row in jobs if row['status'] == 'unknown')
                 reconcile=browser.post(f"/api/bql/deliveries/{unknown['id']}/reconcile",headers=headers,json={'decision':'not_sent','reason':'Đã dừng worker và kiểm tra dữ liệu mock'})
                 check('real reconciliation changes unknown to failed', reconcile.status_code == 200 and reconcile.json()['status'] == 'failed')
+                updated = browser.get('/api/bql/deliveries').json()
+                check('reconciliation is labelled manual without requeue',
+                      next(row for row in updated if row['id'] == unknown['id'])['transport_mode'] == 'manual')
                 check('BFF exposes no arbitrary backend proxy', browser.get('/api/bql/events').status_code == 404)
                 chunks = (FRONTEND/'.next/static').rglob('*.js')
                 check('admin credential absent from browser JS', all(ADMIN.encode() not in p.read_bytes() for p in chunks))
