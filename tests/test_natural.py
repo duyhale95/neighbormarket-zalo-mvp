@@ -146,3 +146,29 @@ class NaturalTests(unittest.TestCase):
         self.assertEqual(self.send('Mình thanh lý ghế 500k').status_code,409)
         self.assertEqual(len(self.rows()),1)
         self.assertEqual(self.rows()[0]['title'],'Bàn')
+
+    def test_bare_confirmation_uses_current_draft_without_model(self):
+        id=self.send('Mình thanh lý ghế 500k').json()['listing_id']
+        self.assertEqual(self.send('xác nhận').status_code,422)
+        self.send('Dùng 6 tháng, không hỏng')
+        count=len(self.ai.calls)
+        result=self.send('  Xác   nhận  ',event_id='confirm-current').json()
+        self.assertEqual(result['listing_id'],id)
+        self.assertEqual(result['status'],'pending')
+        self.assertEqual(len(self.ai.calls),count)
+        self.assertEqual(self.send('xác nhận',event_id='confirm-current').json(),result)
+        self.assertEqual(self.send('xác nhận').status_code,409)
+
+    def test_current_pointer_is_scoped_and_structured_listings_work(self):
+        id=self.send('ban Ghế | 500000 | Cũ').json()['listing_id']
+        self.assertEqual(self.send('xác nhận',user='other').status_code,409)
+        self.assertEqual(self.send('xác nhận',community='other').status_code,409)
+        self.assertEqual(self.send('xac nhan').json()['listing_id'],id)
+
+    def test_bare_confirmation_does_not_pick_older_draft(self):
+        old=self.send('ban Ghế cũ | 500000 | Cũ').json()['listing_id']
+        latest=self.send('ban Bàn | 700000 | Mới').json()['listing_id']
+        self.assertEqual(self.send('xác nhận').json()['listing_id'],latest)
+        self.assertEqual(self.send('xác nhận').status_code,409)
+        self.assertEqual(next(r for r in self.rows() if r['id']==old)['status'],'draft')
+        self.assertEqual(self.send('xác nhận '+old).json()['listing_id'],old)

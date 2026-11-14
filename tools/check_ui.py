@@ -47,6 +47,9 @@ def main():
                     page.get_by_role('button',name='Tải danh sách').click()
                     expect(page.get_by_role('heading',name=title)).to_be_visible()
                     assert page.evaluate('window.__xss') is None
+                    page.context.grant_permissions(['clipboard-read','clipboard-write'],origin=url)
+                    page.get_by_role('button',name='Sao chép mã tin',exact=True).click()
+                    assert page.evaluate('navigator.clipboard.readText()')==id
                     page.get_by_label('Lý do xử lý '+id).fill('Kiểm tra UI bằng dữ liệu tổng hợp')
                     page.get_by_role('button',name='Duyệt tin',exact=True).click()
                     expect(page.get_by_role('button',name='Sao chép tin đăng nhóm')).to_be_visible()

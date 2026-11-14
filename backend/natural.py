@@ -91,6 +91,8 @@ class NaturalIntake:
                 db.execute('INSERT INTO conversations(community_id,sender_id,listing_id,data,revision) VALUES (?,?,?,?,?) '
                            'ON CONFLICT(community_id,sender_id) DO UPDATE SET listing_id=excluded.listing_id,data=excluded.data,revision=excluded.revision',
                            (*scope, id, json.dumps(values, ensure_ascii=False), revision))
+                db.execute('INSERT INTO current_drafts VALUES (?,?,?) ON CONFLICT(community_id,sender_id) DO UPDATE SET listing_id=excluded.listing_id',
+                           (*scope, id))
                 if missing:
                     result = {'listing_id': id, 'status': 'incomplete', 'missing_fields': missing, 'reply': QUESTIONS[missing[0]]}
                 else:
@@ -98,8 +100,8 @@ class NaturalIntake:
                                'ON CONFLICT(id) DO UPDATE SET title=excluded.title,price_vnd=excluded.price_vnd,condition=excluded.condition',
                                (id, *scope, values['title'], values['price_vnd'], values['condition'], 'draft'))
                     result = {'listing_id': id, 'status': 'draft', 'missing_fields': [],
-                              'reply': f"Bản nháp {id}:\n{values['title']}\nGiá: {values['price_vnd']:,}đ\nTình trạng: {values['condition']}\n"
-                                       f"Bạn kiểm tra và nhắn xacnhan {id} để gửi BQL duyệt. Muốn bỏ bản nháp, nhắn huy nhap."}
+                              'reply': f"Bản nháp:\n{values['title']}\nGiá: {values['price_vnd']:,}đ\nTình trạng: {values['condition']}\nMã tin:\n{id}\n"
+                                       "Bạn kiểm tra và nhắn xác nhận để gửi BQL duyệt. Muốn bỏ bản nháp, nhắn huy nhap."}
             if time.monotonic() > deadline - .5:
                 raise HTTPException(503, 'Xử lý quá thời gian. Bạn thử lại sau nhé.')
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))

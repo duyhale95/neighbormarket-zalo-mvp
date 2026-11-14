@@ -6,7 +6,7 @@ Giữ workflow backend đang chạy; không cần nhập workflow mới hoặc b
 1. Nhắn `Mình muốn thanh lý ghế làm việc 500k.`
 2. Bot hỏi tình trạng. Trả lời `Ghế đã dùng 6 tháng, không hư hỏng.`
 3. Bot trả bản nháp có mã tin, giá và tình trạng.
-4. Kiểm tra nội dung, rồi nhắn `xacnhan NM-...` với mã thật. Nếu sai, bổ sung/sửa trước khi xác nhận, ví dụ `Đổi giá thành 450k`.
+4. Kiểm tra nội dung, rồi chỉ cần nhắn `xác nhận`. Các dạng `xac nhan`, `xacnhan` cũng được hỗ trợ. Cách cũ `xacnhan NM-...` vẫn dùng được. Nếu sai, bổ sung/sửa trước khi xác nhận, ví dụ `Đổi giá thành 450k`.
 5. BQL duyệt trên dashboard như trước.
 6. Tìm bằng `tim ghế`, báo đã bán bằng `daban NM-...`.
 
@@ -37,3 +37,7 @@ Chỉ text. Chưa đọc ảnh, natural-language search, semantic search hay t�
 ## Tài liệu API tham khảo
 - [Gemini generateContent](https://ai.google.dev/api/generate-content)
 - [Structured output](https://ai.google.dev/gemini-api/docs/structured-output)
+
+## Xác nhận và sao chép mã
+- Xác nhận không kèm mã chỉ áp dụng cho bản nháp hiện tại của đúng người/khu; thiếu thông tin thì hỏi bổ sung, không có nháp hiện tại thì yêu cầu nêu mã cụ thể. Không tự chọn tin cũ còn draft.
+- Mã tin nằm trên dòng riêng trong phản hồi Zalo. Dashboard có nút Sao chép mã tin. Workflow Zalo văn bản hiện chưa có nút clipboard trực tiếp.

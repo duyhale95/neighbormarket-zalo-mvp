@@ -2,6 +2,7 @@
 import hmac
 import json
 import os
+import re
 import sqlite3
 import unicodedata
 from contextlib import contextmanager
@@ -33,6 +34,14 @@ class Review(BaseModel):
 def normalize(value):
     value = unicodedata.normalize('NFD', value.casefold().replace('đ', 'd'))
     return ''.join(c for c in value if unicodedata.category(c) != 'Mn')
+
+
+def parse_command(text):
+    match = re.fullmatch(r'xac\s*nhan(?:\s+(nm-[a-z0-9]+))?', ' '.join(normalize(text).split()))
+    if match:
+        return 'xacnhan', (match.group(1) or '').upper()
+    command, _, body = text.strip().partition(' ')
+    return normalize(command), body.strip()
 
 
 def create_app(db_path, bridge_key, admin_key, extractor=None):
@@ -74,6 +83,10 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
             );
             CREATE TABLE IF NOT EXISTS draft_epochs (
                 community_id TEXT NOT NULL, sender_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+                PRIMARY KEY(community_id,sender_id)
+            );
+            CREATE TABLE IF NOT EXISTS current_drafts (
+                community_id TEXT NOT NULL, sender_id TEXT NOT NULL, listing_id TEXT NOT NULL,
                 PRIMARY KEY(community_id,sender_id)
             );
         ''')
@@ -123,8 +136,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
         if event.is_self or event.thread_type != 'private':
             return {'ignored': True, 'reply': ''}
         text = event.text.strip()
-        command, _, body = text.partition(' ')
-        command, body = normalize(command), body.strip()
+        command, body = parse_command(text)
         cancelling = normalize(text) == 'huy nhap'
         deterministic = command in ('xacnhan', 'daban', 'tim') or (command == 'ban' and '|' in body) or cancelling
         if intake and not deterministic:
@@ -135,10 +147,6 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
             cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()
             if cached:
                 return json.loads(cached['response'])
-            text = event.text.strip()
-            command, _, body = text.partition(' ')
-            command = normalize(command)
-            body = body.strip()
             if cancelling:
                 if intake:
                     intake.invalidate((event.community_id, event.sender_id))
@@ -146,10 +154,14 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
                            (event.community_id, event.sender_id))
                 previous = db.execute('SELECT listing_id FROM conversations WHERE community_id=? AND sender_id=?',
                                       (event.community_id, event.sender_id)).fetchone()
+                if not previous:
+                    previous = db.execute('SELECT listing_id FROM current_drafts WHERE community_id=? AND sender_id=?',
+                                          (event.community_id, event.sender_id)).fetchone()
                 if previous:
                     db.execute("UPDATE listings SET status='cancelled' WHERE id=? AND community_id=? AND seller_id=? AND status='draft'",
                                (previous['listing_id'], event.community_id, event.sender_id))
                 db.execute('DELETE FROM conversations WHERE community_id=? AND sender_id=?', (event.community_id, event.sender_id))
+                db.execute('DELETE FROM current_drafts WHERE community_id=? AND sender_id=?', (event.community_id, event.sender_id))
                 result = {'reply': 'Đã hủy bản nháp hoặc yêu cầu tạo nháp đang xử lý (nếu có). Bạn có thể gửi thông tin món mới.'}
             elif command == 'ban':
                 parts = [p.strip() for p in body.split('|')]
@@ -165,9 +177,20 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
                            (event.community_id, event.sender_id))
                 db.execute('INSERT INTO draft_epochs VALUES (?,?,1) ON CONFLICT(community_id,sender_id) DO UPDATE SET epoch=epoch+1',
                            (event.community_id, event.sender_id))
+                db.execute('INSERT INTO current_drafts VALUES (?,?,?) ON CONFLICT(community_id,sender_id) DO UPDATE SET listing_id=excluded.listing_id',
+                           (event.community_id, event.sender_id, id))
                 result = {'listing_id': id, 'status': 'draft',
-                          'reply': f'Bản nháp {id}: {title}, {int(price):,}đ, {condition}. Nhắn xacnhan {id} để gửi BQL duyệt.'}
+                          'reply': f'Bản nháp:\n{title}\nGiá: {int(price):,}đ\nTình trạng: {condition}\nMã tin:\n{id}\nNhắn xác nhận để gửi BQL duyệt.'}
             elif command in ('xacnhan', 'daban'):
+                if command == 'xacnhan' and not body:
+                    current = db.execute('SELECT listing_id FROM conversations WHERE community_id=? AND sender_id=?',
+                                         (event.community_id, event.sender_id)).fetchone()
+                    if not current:
+                        current = db.execute('SELECT listing_id FROM current_drafts WHERE community_id=? AND sender_id=?',
+                                             (event.community_id, event.sender_id)).fetchone()
+                    if not current:
+                        raise HTTPException(409, 'Bạn chưa có bản nháp hiện tại. Nếu đã có mã tin, nhắn xác nhận MÃ_TIN.')
+                    body = current['listing_id']
                 row = db.execute('SELECT * FROM listings WHERE id=? AND community_id=? AND seller_id=?',
                                  (body, event.community_id, event.sender_id)).fetchone()
                 if not row:
@@ -183,8 +206,10 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
                 if command == 'xacnhan':
                     db.execute('DELETE FROM conversations WHERE community_id=? AND sender_id=? AND listing_id=?',
                                (event.community_id, event.sender_id, body))
+                    db.execute('DELETE FROM current_drafts WHERE community_id=? AND sender_id=? AND listing_id=?',
+                               (event.community_id, event.sender_id, body))
                 result = {'listing_id': body, 'status': status,
-                          'reply': 'Đã gửi BQL duyệt.' if status == 'pending' else 'Đã đánh dấu bán xong.'}
+                          'reply': f'Đã gửi BQL duyệt.\nMã tin:\n{body}' if status == 'pending' else 'Đã đánh dấu bán xong.'}
             elif command == 'tim':
                 terms = normalize(body).split()
                 if not terms:
