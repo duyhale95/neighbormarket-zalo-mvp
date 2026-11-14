@@ -8,7 +8,7 @@
 
 **Tech Stack:** Giữ local FastAPI/SQLite/Deplao/Gemini text/OpenAI image safety. Embedding, gợi ý giá và ảnh tương tự là các chặng riêng; chọn/cấu hình provider sau khi chốt tiêu chí, không giả đã tích hợp.
 
-**Spec:** Phát triển từ yêu cầu ưu tiên UX trong hội thoại. docs/brief-prd.md là bản nền lịch sử, không phản ánh đầy đủ tính năng đã triển khai.
+**Spec:** Phát triển từ yêu cầu ưu tiên UX của dự án; đối chiếu README và các hướng dẫn vận hành hiện tại.
 
 ## 1. Hiện trạng và phần còn thiếu
 

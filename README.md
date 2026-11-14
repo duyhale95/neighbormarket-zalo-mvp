@@ -1,77 +1,74 @@
 # NeighborMarket Zalo MVP
 
-Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua dashboard.
+Trợ lý chợ cư dân qua Zalo cá nhân, kết nối bằng Deplao và backend FastAPI chạy local. Cư dân chat riêng với Meo Meo; BQL duyệt trên dashboard; publisher đăng tin vào nhóm.
 
-## Mới: bài nhóm có ảnh món hàng
+## Chức năng hiện có
 
-Publisher v2 gửi ảnh đầu kèm nội dung bài, ảnh bổ sung và mã riêng. Tin không ảnh vẫn gửi văn bản. Cần thay workflow đăng nhóm cũ bằng bản v2; không đổi workflow chat/nhận ảnh. [Hướng dẫn cập nhật](docs/group-photos.md).
+- Đăng bán bằng câu tự nhiên với Gemini, hỏi thông tin thiếu, giữ bản nháp nhiều lượt.
+- Xác nhận bằng `xác nhận`; hủy bằng `hủy nháp`.
+- Nhận ảnh Zalo hoặc upload local; chuẩn hóa ảnh, kiểm duyệt an toàn OpenAI, lưu private.
+- BQL xem ảnh, duyệt/từ chối có lý do; ảnh/nội dung phải đúng phiên bản được xem.
+- Tìm từ khóa hoặc xem theo mã; chỉ trả tin cùng khu đã duyệt, còn bán.
+- Publisher v2 gửi ảnh đầu kèm nội dung, ảnh bổ sung và mã riêng; bổ sung ảnh cho bài cũ.
+- Chủ tin báo đã bán; loại khỏi tìm kiếm, đưa thông báo ĐÃ BÁN vào nhóm.
+- Chống xử lý trùng, kiểm tra chủ tin/khu, outbox và receipt từng phần. Trạng thái gửi chưa rõ cần người kiểm tra trước khi đăng lại.
 
-## Mới: thông báo đã bán và kiểm duyệt an toàn ảnh
+## Chạy local
 
-Chủ tin báo đã bán sẽ ngừng xuất hiện trong tìm kiếm và đưa thông báo ĐÃ BÁN vào nhóm qua publisher hiện có (không thu hồi bài cũ). Có workflow nhận ảnh riêng, upload ảnh local, OpenAI safety moderation và hàng đợi BQL xem ảnh có cờ. Xem [hướng dẫn cấu hình và nghiệm thu](docs/sold-and-image-safety.md). Ảnh cần gửi sau text tạo nháp, trước xác nhận.
-
-## Mới: đưa tin đã duyệt lên nhóm demo
-
-Có outbox và workflow lịch Deplao đăng bài + mã món đồ riêng; dashboard hiển thị trạng thái đăng. Người mua có thể gửi riêng mã cho bot để xem tin còn bán. Xem [hướng dẫn bật đăng nhóm](docs/group-publishing.md). Cần import/bật workflow publisher mới trong Deplao; chỉ chạy backend không tự gửi nhóm.
-
-## Mới: đăng bán bằng câu tự nhiên
-
-Backend có thể dùng Gemini để hiểu “Mình muốn thanh lý ghế làm việc 500k”, hỏi thông tin còn thiếu và giữ bản nháp qua nhiều lượt. Người bán kiểm tra, xác nhận; BQL duyệt như trước. Không cần đổi workflow backend hiện tại. Xem [hướng dẫn và cấu hình](docs/natural-text.md).
-
-Đã kiểm thử provider Gemini thật bằng dữ liệu tổng hợp và các kiểm tra nghiệp vụ. Chưa xác nhận chat Zalo thật cho tính năng natural text mới; ảnh và tìm kiếm ngữ nghĩa chưa triển khai. Các mô tả chặng text-only bên dưới nói về nền nghiệp vụ ban đầu.
-
-## Bắt đầu chạy backend MVP
-
-**Bản local mới:** mở [bàn duyệt tin](http://127.0.0.1:8000/admin) sau khi chạy script. Xem [hướng dẫn Deplao và demo local](docs/local-demo.md). Có cầu nối text `/bridge/zalo` và công cụ xuất workflow riêng tư; chưa tự nhập hoặc bật workflow trong Deplao.
-
-Đã có backend local cho tạo nháp, xác nhận, BQL duyệt/từ chối, tìm tin và báo đã bán. Đây là nền nghiệp vụ độc lập; chưa phải demo Zalo end-to-end. Không cần Supabase hoặc Gemini key để chạy các bước thử bên dưới.
-
-Yêu cầu Python 3.11+ và PowerShell 7 cho script khởi động.
+Yêu cầu Python 3.11+, PowerShell 7 và Deplao trên cùng máy để đọc ảnh local.
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 pwsh -File .\run-local.ps1
 ```
 
-Mở [API thử nghiệm local](http://127.0.0.1:8000/docs) hoặc [dashboard BQL local](http://127.0.0.1:8000/admin). Script tạo hai khóa thử khác nhau trong `private/local-config.json` (đã gitignore). Điền `bridge_key` ở ô `x-api-key` khi gọi `/events`, `admin_key` khi xem/duyệt tin. Không gửi khóa vào chat hoặc GitHub. Dashboard dùng khóa demo, chưa phải login BQL production.
+- Dashboard: http://127.0.0.1:8000/admin
+- API thử: http://127.0.0.1:8000/docs
+- Trạng thái: http://127.0.0.1:8000/health
 
-Đọc [hướng dẫn thử và hợp đồng tích hợp](docs/integration.md), [brief/PRD và UI flow](docs/brief-prd.md), [kế hoạch triển khai](docs/superpowers/plans/2026-11-14-marketplace-backend.md).
+Script tạo `private/local-config.json` với bridge key và admin key khác nhau. Nhập admin key vào dashboard. Database, ảnh, khóa DPAPI, workflow chứa key và backup ở `private/`, không được commit/chia sẻ công khai. Gemini/OpenAI vẫn cần Internet dù backend chạy local.
 
-```powershell
-python -m unittest discover -s tests -v
+Đọc [cấu hình local và Deplao](docs/local-setup.md) để nạp model/key và sinh ba workflow hiện tại.
+
+## Ví dụ
+
+```text
+Mình muốn bán ghế làm việc 500k, dùng 6 tháng, không hỏng.
 ```
 
-Trạng thái: SQLite, dashboard duyệt tin, cầu nối Deplao text, trích xuất text tự nhiên bằng Gemini và tìm kiếm từ khóa; chưa có xử lý ảnh, Supabase/pgvector, login BQL production hoặc deploy VPS. Test AI dự kiến được giữ riêng ở `docs/planned-tests`, chưa thuộc tính năng đã triển khai.
+Gửi ảnh trước khi xác nhận, xem nháp rồi nhắn `xác nhận`. BQL duyệt trên web. Người mua nhắn `tìm ghế` hoặc gửi mã `NM-...`. Chủ tin báo bán xong bằng `đã bán MÃ_TIN`.
 
-## Đã làm
-- Chốt hướng MVP trên Zalo cá nhân, sử dụng Deplao và Gemini.
-- Tạo trợ lý Meo Meo và workflow nhận tin → Gemini → trả lời.
-- Chạy thử thủ công workflow thành công.
-- Chuẩn bị workflow trả lời tin nhắn văn bản riêng, không cần lệnh /chat.
+Ba workflow: chat riêng, nhận ảnh, đăng nhóm có ảnh v2. Chỉ bật một publisher nhóm; chọn đúng tài khoản Zalo và kiểm tra bộ lọc người gửi trước khi thử bằng tài khoản khác.
 
-## Đang làm
-- Đã có bản brief/PRD và UI flow đầu tiên trong docs; tiếp tục lấy phản hồi.
-- Đã nối backend với workflow và dashboard; đang nghiệm thu Gemini text qua Zalo, tiếp theo là ảnh.
-- Kiểm tra nhận tin và phản hồi tự động qua Zalo.
+## Hướng dẫn
 
-## Đang vướng
-- Điện thoại Meo Meo nhận được tin nhưng Deplao chưa ghi nhận sự kiện tin đến.
-- Workflow chạy thử thủ công được, chưa chạy tự động khi người dùng nhắn.
-- Chưa hoàn tất demo end-to-end bằng tin nhắn thật.
+- [Cài đặt, cấu hình và API bridge](docs/local-setup.md)
+- [Hội thoại đăng bán](docs/natural-text.md)
+- [Đã bán và kiểm duyệt an toàn ảnh](docs/sold-and-image-safety.md)
+- [Đăng nhóm có ảnh — publisher v2](docs/group-photos.md)
+- [Quy chuẩn tin nhắn](docs/message-style.md)
+- [Roadmap ưu tiên trải nghiệm cư dân](docs/roadmap.md)
 
-## Workflow mẫu
-Nhập `workflows/meo-meo-auto-reply-private.json` vào Deplao, chọn tài khoản và trợ lý Gemini, lưu và bật workflow. Tắt workflow cũ để tránh phản hồi trùng.
+## Kiểm thử
 
-Workflow chỉ nhận tin nhắn văn bản trong chat riêng và bỏ qua tin tự gửi. Cần xử lý lỗi kết nối nhận tin trước khi xác nhận demo hoạt động. Chưa tích hợp lưu tin bán, tìm kiếm hay duyệt tin.
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
 
-## Công nghệ
-- Deplao: kết nối tài khoản Zalo và chạy workflow.
-- Gemini: tạo câu trả lời.
-- Dashboard, lưu trữ và tìm kiếm: dự kiến phát triển sau.
+Browser QA dùng database tạm và dữ liệu tổng hợp:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe tools/check_ui.py
+```
+
+Script UI dùng Edge headless trên Windows. CI chạy unittest, không cần key/Zalo. `check_gemini_text.py` và `check_moderation.py` là smoke test cloud tùy chọn bằng dữ liệu tổng hợp.
+
+## Giới hạn
+
+Đây là MVP local. BQL dùng admin key demo; cư dân/khu cần xác minh trước khi mở rộng. Tìm kiếm hiện là từ khóa; chưa có semantic search, gợi ý giá, tìm ảnh trùng, đối chiếu ảnh/mô tả hoặc kết nối hai bên đầy đủ. Moderation không xác thực ảnh thật/quyền sở hữu. Báo đã bán chưa tự thu hồi bài cũ. Máy và Deplao phải tiếp tục chạy để nhận/gửi tin.
 
 ## Nguồn tham khảo
-- [Deplao Builder](https://github.com/babyvibe/deplao-builder)
 
-Repo gồm backend local, kiểm thử, tài liệu tiến độ và cấu hình mẫu; không chứa API key thật, cookie hoặc dữ liệu hội thoại thật.
+[Deplao Builder](https://github.com/babyvibe/deplao-builder)

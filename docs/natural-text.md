@@ -32,7 +32,7 @@ Provider có deadline 10 giây; tác vụ model trả muộn bị bỏ qua. Lu�
 Smoke Gemini dùng dữ liệu tổng hợp và database tạm, không gửi Zalo. Kiểm tra thật qua Zalo do người dùng thực hiện.
 
 ## Giới hạn
-Chỉ text. Chưa đọc ảnh, natural-language search, semantic search hay tự động kiểm duyệt. Tin do AI trích xuất vẫn cần người bán kiểm tra và BQL duyệt. Bộ test ảnh cũ trong docs/planned-tests vẫn là kế hoạch.
+Gemini trong luồng này chỉ trích xuất text. Ảnh đi qua luồng kiểm duyệt an toàn riêng; xem [hướng dẫn ảnh](sold-and-image-safety.md). Chưa có natural-language search, semantic search, đối chiếu ảnh/mô tả hoặc gợi ý giá. Tin vẫn cần người bán xác nhận và BQL duyệt.
 
 ## Tài liệu API tham khảo
 - [Gemini generateContent](https://ai.google.dev/api/generate-content)
