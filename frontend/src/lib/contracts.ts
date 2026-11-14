@@ -30,6 +30,22 @@ export const listingSchema = z.object({
   moderation_flags: z.string(),
   source_channel: z.enum(['legacy', 'deplao', 'mock']).optional(),
   moderation: moderationSchema.nullable().optional(),
+  image_review_token: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
+  images: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-f0-9]{32}$/),
+        status: z.enum(['clear', 'flagged', 'pending', 'error', 'unavailable', 'stale']),
+        categories: z.array(z.string()),
+        model: z.string(),
+        revision: z.string(),
+      }),
+    )
+    .max(5)
+    .optional(),
 });
 export const deliverySchema = z.object({
   id: z.string(),
@@ -43,20 +59,53 @@ export const deliverySchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   transport_mode: z.enum(['mock', 'deplao', 'unverified', 'manual']).optional(),
+  parts: z
+    .array(
+      z.object({
+        id: z.string(),
+        kind: z.enum([
+          'post_text',
+          'cover_photo_with_caption',
+          'additional_photo',
+          'listing_code',
+          'sold_notice',
+        ]),
+        position: z.number(),
+        status: z.string(),
+        attempts: z.number(),
+        last_error: z.string().nullable(),
+        sent_message_id: z.string().nullable(),
+        transport_mode: z.string(),
+      }),
+    )
+    .optional(),
 });
 export type Stats = z.infer<typeof statsSchema>;
 export type Listing = z.infer<typeof listingSchema>;
 export type Delivery = z.infer<typeof deliverySchema>;
 export const reviewSchema = z
-  .object({ action: z.enum(['approve', 'reject']), reason: z.string().trim().min(1).max(1000) })
+  .object({
+    action: z.enum(['approve', 'reject']),
+    reason: z.string().trim().min(1).max(1000),
+    image_review_token: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    manual_image_review: z.boolean().optional(),
+  })
   .strict();
 export const reconcileSchema = z
   .object({
     decision: z.enum(['sent', 'not_sent']),
     reason: z.string().trim().min(1).max(1000),
     sent_message_id: z.string().trim().min(1).max(200).optional(),
+    part_id: z
+      .string()
+      .regex(/^[a-f0-9]{32}$/)
+      .optional(),
   })
   .strict();
+export const uploadSchema = z.object({ image_base64: z.string().min(1).max(5600000) }).strict();
 export function flagsOf(value: string): string[] {
   try {
     const result = JSON.parse(value);

@@ -4,8 +4,9 @@ import { AlertTriangle, ArrowLeft, Check, X } from 'lucide-react';
 import { flagsOf, type Listing } from '@/lib/contracts';
 import { flagLabels, money, date, Notice, Status, sourceLabels, riskLabels } from './shared';
 import { mutate } from './use-data';
+import { ImageReview } from './image-review';
 export function ReviewDialog({
-  listing,
+  listing: initialListing,
   onClose,
   onSuccess,
 }: {
@@ -14,6 +15,8 @@ export function ReviewDialog({
   onSuccess: (message: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [listing, setListing] = useState(initialListing);
+  const [manualImageReview, setManualImageReview] = useState(false);
   const [reason, setReason] = useState('');
   const [action, setAction] = useState<'approve' | 'reject' | null>(null);
   const [busy, setBusy] = useState(false);
@@ -23,6 +26,8 @@ export function ReviewDialog({
   }, []);
   const flags = flagsOf(listing.moderation_flags);
   const blocked = flags.some((flag) => ['sensitive_information', 'prohibited'].includes(flag));
+  const photoPending = listing.images?.some((i) => i.status === 'pending');
+  const photoNeedsReview = listing.images?.some((i) => i.status !== 'clear');
   async function confirm() {
     if (!action || !reason.trim() || busy) return;
     setBusy(true);
@@ -31,6 +36,12 @@ export function ReviewDialog({
       const result = await mutate(`listings/${listing.id}/review`, {
         action,
         reason: reason.trim(),
+        ...(listing.images?.length
+          ? {
+              image_review_token: listing.image_review_token,
+              manual_image_review: manualImageReview,
+            }
+          : {}),
       });
       onSuccess(
         result.delivery_status === 'not_configured'
@@ -155,6 +166,30 @@ export function ReviewDialog({
           {blocked && (
             <Notice message="Có thông tin nhạy cảm hoặc từ khóa hàng cấm. Hãy từ chối và yêu cầu người bán viết lại; backend sẽ chặn phê duyệt." />
           )}
+          <ImageReview
+            listing={listing}
+            onChange={(next) => {
+              setListing(next);
+              setManualImageReview(false);
+              setAction(null);
+            }}
+          />
+          {!!listing.images?.length && listing.status === 'pending' && (
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={manualImageReview}
+                onChange={(e) => setManualImageReview(e.target.checked)}
+              />
+              <span>
+                Tôi đã trực tiếp xem ảnh đúng phiên bản, kiểm tra nội dung và ghi bằng chứng vào lý
+                do. Không coi clear là chứng nhận hàng thật.
+              </span>
+            </label>
+          )}
+          {photoNeedsReview && (
+            <Notice message="Ảnh chưa clear hoặc đã stale: kiểm tra lại, hoặc BQL ghi bằng chứng thủ công. Ảnh pending luôn chặn duyệt." />
+          )}
           {listing.status === 'pending' && (
             <>
               <label htmlFor="review-reason">
@@ -215,7 +250,12 @@ export function ReviewDialog({
             <button
               className="button button-navy"
               onClick={() => setAction('approve')}
-              disabled={!reason.trim() || blocked}
+              disabled={
+                !reason.trim() ||
+                blocked ||
+                photoPending ||
+                (!!photoNeedsReview && !manualImageReview)
+              }
             >
               Phê duyệt tin
               <Check size={17} />

@@ -7,6 +7,7 @@ import {
   deliverySchema,
   reviewSchema,
   reconcileSchema,
+  uploadSchema,
 } from '@/lib/contracts';
 import { z } from 'zod';
 type Context = { params: Promise<{ path: string[] }> };
@@ -24,6 +25,8 @@ async function handle(request: NextRequest, context: Context) {
   const path = (await context.params).path;
   let endpoint: string;
   let body: unknown;
+  const imageId = path.length >= 2 && path[0] === 'images' && /^[a-f0-9]{32}$/.test(path[1]);
+  const preview = request.method === 'GET' && imageId && path.length === 2;
   if (
     request.method === 'GET' &&
     path.length === 1 &&
@@ -33,6 +36,8 @@ async function handle(request: NextRequest, context: Context) {
       path[0] === 'health'
         ? '/health'
         : `/${path[0]}?community_id=${encodeURIComponent(config.community)}`;
+  } else if (preview) {
+    endpoint = `/images/${path[1]}?community_id=${encodeURIComponent(config.community)}`;
   } else if (request.method === 'POST') {
     if (
       !sameOrigin(request.headers.get('origin'), config.origin) ||
@@ -44,15 +49,37 @@ async function handle(request: NextRequest, context: Context) {
     if (path.length !== 3 || !/^[A-Za-z0-9-]{1,80}$/.test(path[1]))
       return reply({ error: 'Không có thao tác này.' }, 404);
     try {
-      if (Number(request.headers.get('content-length')) > 8192)
+      const isUpload = path[0] === 'listings' && path[2] === 'images';
+      const limit = isUpload ? 6 * 1024 * 1024 : 8192;
+      if (Number(request.headers.get('content-length')) > limit)
         return reply({ error: 'Yêu cầu quá lớn.' }, 413);
-      const input = await request.json();
+      // Bound chunked bodies as well; do not trust Content-Length alone.
+      const reader = request.body?.getReader();
+      let size = 0;
+      const chunks: Uint8Array[] = [];
+      if (!reader) return reply({ error: 'Thiếu nội dung yêu cầu.' }, 422);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > limit) {
+          await reader.cancel();
+          return reply({ error: 'Yêu cầu quá lớn.' }, 413);
+        }
+        chunks.push(value);
+      }
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (path[0] === 'listings' && path[2] === 'review')
         body = { ...reviewSchema.parse(input), community_id: config.community };
       else if (path[0] === 'deliveries' && path[2] === 'reconcile')
         body = reconcileSchema.parse(input);
-      else return reply({ error: 'Không có thao tác này.' }, 404);
+      else if (isUpload) body = { ...uploadSchema.parse(input), community_id: config.community };
+      else if (imageId && path[2] === 'recheck') {
+        z.object({}).strict().parse(input);
+        body = {};
+      } else return reply({ error: 'Không có thao tác này.' }, 404);
       endpoint = `/${path.map(encodeURIComponent).join('/')}`;
+      if (imageId) endpoint += `?community_id=${encodeURIComponent(config.community)}`;
       // Reconciliation API has no community parameter: enforce scope before forwarding.
       if (path[0] === 'deliveries') {
         const scope = await fetch(
@@ -100,6 +127,20 @@ async function handle(request: NextRequest, context: Context) {
         response.status === 401 || response.status >= 500 ? 502 : response.status,
       );
     }
+    if (preview) {
+      if (response.headers.get('content-type') !== 'image/jpeg')
+        return reply({ error: 'Ảnh không đúng định dạng.' }, 502);
+      const bytes = await response.arrayBuffer();
+      if (bytes.byteLength > 4 * 1024 * 1024) return reply({ error: 'Ảnh vượt giới hạn.' }, 502);
+      return new NextResponse(bytes, {
+        headers: {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+        },
+      });
+    }
     const data = await response.json();
     if (request.method === 'GET') {
       if (path[0] === 'stats') return reply(statsSchema.parse(data));
@@ -111,11 +152,13 @@ async function handle(request: NextRequest, context: Context) {
       });
     }
     return reply(
-      path[0] === 'listings'
-        ? z
-            .object({ listing_id: z.string(), status: z.string(), delivery_status: z.string() })
-            .parse(data)
-        : z.object({ delivery_id: z.string(), status: z.string() }).parse(data),
+      path[0] === 'images' || path[2] === 'images'
+        ? z.object({ image_id: z.string(), status: z.string() }).parse(data)
+        : path[0] === 'listings'
+          ? z
+              .object({ listing_id: z.string(), status: z.string(), delivery_status: z.string() })
+              .parse(data)
+          : z.object({ delivery_id: z.string(), status: z.string() }).parse(data),
     );
   } catch {
     return reply(

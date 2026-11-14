@@ -20,6 +20,7 @@ function ReconcileDialog({
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const unknownPart = delivery.parts?.find((p) => p.status === 'unknown');
   useEffect(() => {
     ref.current?.showModal();
   }, []);
@@ -33,6 +34,7 @@ function ReconcileDialog({
         decision,
         reason: reason.trim(),
         ...(decision === 'sent' && messageId.trim() ? { sent_message_id: messageId.trim() } : {}),
+        ...(unknownPart ? { part_id: unknownPart.id } : {}),
       });
       onSuccess();
     } catch (e) {
@@ -85,6 +87,7 @@ function ReconcileDialog({
               value={messageId}
               onChange={(e) => setMessageId(e.target.value)}
               maxLength={200}
+              required={!!unknownPart}
             />
           </>
         )}
@@ -221,6 +224,36 @@ export function DeliveryMonitor() {
                         {evidenceLabels[row.transport_mode || 'unverified']}
                       </p>
                       {row.sent_message_id && <small>ID: {row.sent_message_id}</small>}
+                      {!!row.parts?.length && (
+                        <details>
+                          <summary>
+                            {row.parts.filter((p) => p.status === 'sent').length}/{row.parts.length}{' '}
+                            phần có receipt
+                          </summary>
+                          {row.parts.map((part) => (
+                            <p className="field-help" key={part.id}>
+                              <strong>{part.kind}</strong> · {labels[part.status] || part.status}
+                              <br />
+                              ID phần: {part.id}
+                              <br />
+                              {part.sent_message_id && (
+                                <>
+                                  Receipt: {part.sent_message_id}
+                                  <br />
+                                </>
+                              )}
+                              {evidenceLabels[part.transport_mode] || part.transport_mode} ·{' '}
+                              {part.attempts} lần
+                              {part.last_error && (
+                                <>
+                                  <br />
+                                  {part.last_error}
+                                </>
+                              )}
+                            </p>
+                          ))}
+                        </details>
+                      )}
                     </td>
                     <td>{row.attempts}</td>
                     <td className="date-cell">
@@ -259,7 +292,9 @@ export function DeliveryMonitor() {
           onClose={() => setSelected(null)}
           onSuccess={() => {
             setSelected(null);
-            setMessage('Đã lưu quyết định đối soát. Job không được tự đưa lại vào hàng chờ.');
+            setMessage(
+              'Đã lưu đối soát. Phần đã gửi không được gửi lại; phần tiếp theo chỉ tiếp tục khi đủ điều kiện.',
+            );
             refresh();
           }}
         />

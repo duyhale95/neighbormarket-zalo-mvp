@@ -47,3 +47,24 @@ test('delivery evidence is optional for legacy responses and distinguishes mock 
   assert.equal(deliverySchema.parse(old).transport_mode, undefined);
   assert.equal(deliverySchema.parse({ ...old, transport_mode: 'mock' }).transport_mode, 'mock');
 });
+
+test('private media metadata and snapshot tokens survive validation without exposing bytes', () => {
+  const parsed = listingSchema.parse({
+    ...oldListing,
+    image_review_token: 'a'.repeat(64),
+    images: [
+      {
+        id: 'b'.repeat(32),
+        status: 'stale',
+        categories: ['violence'],
+        model: 'mock',
+        revision: 'c'.repeat(32),
+        data: 'never expose',
+        url: 'never expose',
+      },
+    ],
+  });
+  assert.equal(parsed.images?.[0].status, 'stale');
+  assert.equal(parsed.image_review_token, 'a'.repeat(64));
+  assert.equal('data' in (parsed.images?.[0] || {}), false);
+});
