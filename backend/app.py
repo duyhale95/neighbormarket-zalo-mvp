@@ -1,9 +1,13 @@
 """Local MVP. Only the trusted bridge may assert community/sender identity."""
 import hmac
+import hashlib
 import json
+import logging
 import os
+import re
 import sqlite3
 import secrets
+import time
 import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,6 +20,17 @@ import httpx
 
 from backend.ai import ListingExtraction, extract_listing
 from backend.moderation import moderation_flags
+
+audit_logger = logging.getLogger('neighbormarket.audit')
+audit_logger.setLevel(logging.INFO)
+if not audit_logger.handlers:
+    audit_logger.addHandler(logging.StreamHandler())
+audit_logger.propagate = False
+
+
+def audit(action: str, **fields) -> None:
+    """Emit only explicitly selected metadata; never include chat text or credentials."""
+    audit_logger.info(json.dumps({'action': action, **fields}, ensure_ascii=False))
 
 
 class Event(BaseModel):
@@ -140,6 +155,16 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
     def health():
         return {'status': 'ok', 'mode': 'local-mvp'}
 
+    @app.get('/stats', dependencies=[Depends(authenticate(admin_key))])
+    def stats(community_id: str = Query(min_length=1, max_length=100)):
+        with database() as db:
+            counts = {row['status']: row['n'] for row in db.execute(
+                'SELECT status, COUNT(*) AS n FROM listings WHERE community_id=? GROUP BY status', (community_id,))}
+            sent = db.execute("SELECT COUNT(*) AS n FROM listing_deliveries WHERE community_id=? AND status='sent'", (community_id,)).fetchone()['n']
+            return {'total': sum(counts.values()), 'pending': counts.get('pending', 0),
+                    'approved': counts.get('approved', 0), 'rejected': counts.get('rejected', 0),
+                    'sold': counts.get('sold', 0), 'sent': sent}
+
     @app.get('/listings', dependencies=[Depends(authenticate(admin_key))])
     def listings(community_id: str = Query(min_length=1, max_length=100)):
         with database() as db:
@@ -167,6 +192,9 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 db.execute('INSERT INTO listing_deliveries(id,listing_id,community_id,target_group_id,status) VALUES (?,?,?,?,?)',
                            (uuid4().hex, listing_id, request.community_id, target_group_id, 'queued'))
                 delivery_status = 'queued'
+            db.commit()
+            audit('review', listing_id=listing_id, actor='admin-key', status=status,
+                  moderation_flags=json.loads(row['moderation_flags']), delivery_status=delivery_status)
             return {'listing_id': listing_id, 'status': status, 'delivery_status': delivery_status}
 
     @app.post('/deliveries/claim', dependencies=[Depends(authenticate(bridge_key))])
@@ -189,6 +217,8 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             db.execute("""UPDATE listing_deliveries SET status='claimed', attempts=attempts+1,
                 claim_token=?, claimed_at=CURRENT_TIMESTAMP,
                 lease_expires_at=datetime('now','+5 minutes'), updated_at=CURRENT_TIMESTAMP WHERE id=?""", (token, row['id']))
+            db.commit()
+            audit('delivery', delivery_id=row['id'], listing_id=row['listing_id'], delivery_status='claimed')
             message = (f"[NEIGHBORMARKET — TIN ĐÃ DUYỆT]\n\nSản phẩm: {public_text(row['title'])}\n"
                        f"Giá: {row['price_vnd']:,}đ\nTình trạng: {public_text(row['condition'])}\n\n"
                        f"Mã tin: {row['listing_id']}\n\nNhắn riêng cho Meo Meo để tìm hiểu sản phẩm.")
@@ -206,6 +236,8 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             if row['status'] not in ('claimed', 'unknown'):
                 raise HTTPException(409, 'Delivery cannot be acknowledged')
             db.execute("UPDATE listing_deliveries SET status='sent', sent_message_id=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (request.sent_message_id, delivery_id))
+            db.commit()
+            audit('delivery', delivery_id=delivery_id, listing_id=row['listing_id'], delivery_status='sent')
             return {'delivery_id': delivery_id, 'status': 'sent'}
 
     @app.post('/deliveries/{delivery_id}/failure', dependencies=[Depends(authenticate(bridge_key))])
@@ -220,6 +252,8 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             # Do not persist arbitrary SDK errors that might contain credentials.
             error = request.error if request.error in ('timeout', 'connection_error', 'send_rejected') else 'other'
             db.execute('UPDATE listing_deliveries SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', (status, error, delivery_id))
+            db.commit()
+            audit('delivery', delivery_id=delivery_id, listing_id=row['listing_id'], delivery_status=status, error=error)
             return {'delivery_id': delivery_id, 'status': status}
 
     @app.get('/deliveries', dependencies=[Depends(authenticate(admin_key))])
@@ -253,12 +287,15 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             db.execute('INSERT INTO delivery_reconciliations(delivery_id,decision,reason) VALUES (?,?,?)', (delivery_id, request.decision, request.reason))
             db.execute('UPDATE listing_deliveries SET status=?, sent_message_id=?, claim_token=NULL, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
                        (status, request.sent_message_id if status == 'sent' else None, None if status == 'sent' else 'reconciled_not_sent', delivery_id))
+            db.commit()
+            audit('reconcile', actor='admin-key', delivery_id=delivery_id, listing_id=row['listing_id'], delivery_status=status)
             return {'delivery_id': delivery_id, 'status': status}
 
     @app.post('/events', dependencies=[Depends(authenticate(bridge_key))])
     def event(event: Event):
         if event.is_self or event.thread_type != 'private':
             return {'ignored': True, 'reply': ''}
+        event_digest = hashlib.sha256(event.event_id.encode('utf-8')).hexdigest()
         identity = (event.community_id, event.sender_id, event.event_id)
         text = event.text.strip()
         command, _, body = text.partition(' ')
@@ -271,12 +308,21 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             return json.loads(cached['response'])
         extracted = None
         if command not in ('ban', 'xacnhan', 'daban', 'tim'):
+            ai_active = os.getenv('AI_ENABLED', '').lower() in ('1', 'true', 'yes') and bool(os.getenv('OPENAI_API_KEY', '').strip())
+            started = time.monotonic()
             try:
                 raw = extract_listing(text)
                 if raw is not None:
                     extracted = ListingExtraction.model_validate(raw)
             except (httpx.HTTPError, ValueError, TypeError, ValidationError):
                 extracted = None
+            if ai_active:
+                model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+                if not re.fullmatch(r'[A-Za-z0-9._:-]{1,100}', model):
+                    model = 'invalid-model-name'
+                audit('ai_extraction', event_id=event_digest, correlation_id=event_digest,
+                      model=model, latency_ms=round((time.monotonic() - started) * 1000),
+                      result='extracted' if extracted else 'fallback')
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()
@@ -341,6 +387,10 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             else:
                 result = {'reply': 'Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh.'}
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
+            db.commit()
+            audit('event', event_id=event_digest, correlation_id=event_digest,
+                  listing_id=result.get('listing_id'), status=result.get('status'),
+                  moderation_flags=flags if result.get('status') == 'draft' else [])
             return result
 
     return app
