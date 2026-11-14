@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 import httpx
 
 from backend.ai import ListingExtraction, extract_listing
-from backend.moderation import moderation_flags
+from backend.moderation import BLOCKING_FLAGS, assess_listing, moderation_flags
 
 audit_logger = logging.getLogger('neighbormarket.audit')
 audit_logger.setLevel(logging.INFO)
@@ -40,6 +40,7 @@ class Event(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     thread_type: Literal['private', 'group'] = 'private'
     is_self: bool = False
+    source_channel: Literal['legacy', 'deplao', 'mock'] = 'legacy'
 
 
 class Review(BaseModel):
@@ -51,6 +52,7 @@ class Review(BaseModel):
 class DeliveryAck(BaseModel):
     claim_token: str = Field(min_length=1, max_length=200)
     sent_message_id: str | None = Field(default=None, max_length=200)
+    transport_mode: Literal['mock', 'deplao', 'unverified'] = 'unverified'
 
 
 class DeliveryFailure(BaseModel):
@@ -120,6 +122,13 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
         columns = {row['name'] for row in db.execute('PRAGMA table_info(listings)')}
         if 'moderation_flags' not in columns:
             db.execute("ALTER TABLE listings ADD COLUMN moderation_flags TEXT NOT NULL DEFAULT '[]'")
+        if 'moderation_report' not in columns:
+            db.execute("ALTER TABLE listings ADD COLUMN moderation_report TEXT NOT NULL DEFAULT '{}'")
+        if 'source_channel' not in columns:
+            db.execute("ALTER TABLE listings ADD COLUMN source_channel TEXT NOT NULL DEFAULT 'legacy'")
+        delivery_columns = {row['name'] for row in db.execute('PRAGMA table_info(listing_deliveries)')}
+        if 'transport_mode' not in delivery_columns:
+            db.execute("ALTER TABLE listing_deliveries ADD COLUMN transport_mode TEXT NOT NULL DEFAULT 'unverified'")
 
     app = FastAPI(title='NeighborMarket local MVP', version='0.1.0')
 
@@ -138,7 +147,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
     def public_delivery(row):
         return {key: row[key] for key in (
             'id', 'listing_id', 'community_id', 'target_group_id', 'status',
-            'attempts', 'last_error', 'sent_message_id', 'created_at', 'updated_at')}
+            'attempts', 'last_error', 'sent_message_id', 'created_at', 'updated_at', 'transport_mode')}
 
     def require_claim(db, delivery_id, claim_token):
         row = db.execute('SELECT * FROM listing_deliveries WHERE id=?', (delivery_id,)).fetchone()
@@ -150,6 +159,12 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
 
     def public_text(value):
         return ' '.join(value.split())
+
+    def listing_record(row):
+        result = dict(row)
+        raw = result.pop('moderation_report', '{}')
+        result['moderation'] = json.loads(raw) or None
+        return result
 
     @app.get('/health')
     def health():
@@ -168,7 +183,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
     @app.get('/listings', dependencies=[Depends(authenticate(admin_key))])
     def listings(community_id: str = Query(min_length=1, max_length=100)):
         with database() as db:
-            return [dict(row) for row in db.execute(
+            return [listing_record(row) for row in db.execute(
                 'SELECT * FROM listings WHERE community_id=? ORDER BY rowid DESC LIMIT 100', (community_id,))]
 
     @app.post('/listings/{listing_id}/review', dependencies=[Depends(authenticate(admin_key))])
@@ -181,8 +196,8 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 raise HTTPException(404, 'Listing not found')
             if row['status'] != 'pending':
                 raise HTTPException(409, 'Only pending listings may be reviewed')
-            if request.action == 'approve' and 'sensitive_information' in moderation_flags(row['title'], row['condition']):
-                raise HTTPException(422, 'Thông tin liên hệ nhạy cảm: từ chối và yêu cầu người bán viết lại.')
+            if request.action == 'approve' and BLOCKING_FLAGS.intersection(moderation_flags(row['title'], row['condition'])):
+                raise HTTPException(422, 'Thông tin nhạy cảm hoặc mặt hàng bị cấm: từ chối và yêu cầu người bán viết lại.')
             status = 'approved' if request.action == 'approve' else 'rejected'
             db.execute('UPDATE listings SET status=? WHERE id=?', (status, listing_id))
             db.execute('INSERT INTO reviews(listing_id,action,reason) VALUES (?,?,?)',
@@ -210,7 +225,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 AND d.community_id=? ORDER BY d.rowid LIMIT 1""", (target_group_id, target_community_id)).fetchone()
             if not row:
                 return Response(status_code=204)
-            if 'sensitive_information' in moderation_flags(row['title'], row['condition']):
+            if BLOCKING_FLAGS.intersection(moderation_flags(row['title'], row['condition'])):
                 db.execute("UPDATE listing_deliveries SET status='failed', last_error='sensitive_information', updated_at=CURRENT_TIMESTAMP WHERE id=?", (row['id'],))
                 return Response(status_code=204)
             token = secrets.token_urlsafe(32)
@@ -235,7 +250,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 return {'delivery_id': delivery_id, 'status': 'sent'}
             if row['status'] not in ('claimed', 'unknown'):
                 raise HTTPException(409, 'Delivery cannot be acknowledged')
-            db.execute("UPDATE listing_deliveries SET status='sent', sent_message_id=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (request.sent_message_id, delivery_id))
+            db.execute("UPDATE listing_deliveries SET status='sent', sent_message_id=?, transport_mode=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (request.sent_message_id, request.transport_mode, delivery_id))
             db.commit()
             audit('delivery', delivery_id=delivery_id, listing_id=row['listing_id'], delivery_status='sent')
             return {'delivery_id': delivery_id, 'status': 'sent'}
@@ -351,12 +366,15 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 else:
                     if len(title) > 250 or len(condition) > 500 or not 0 <= price <= 1_000_000_000:
                         raise HTTPException(422, 'Tên, tình trạng hoặc giá vượt giới hạn')
-                    flags = moderation_flags(title, condition)
-                    if extracted and extracted.risk_flags:
-                        flags.append('ai_suspicious')
+                    report = assess_listing(title, condition, price, ai_flags=bool(extracted and extracted.risk_flags),
+                        model_version=os.getenv('OPENAI_MODEL', 'gpt-4o-mini') if extracted else 'rules-only',
+                        ai_status='advisory' if extracted else 'not_requested')
+                    flags = report.categories
                     id = 'NM-' + uuid4().hex[:12].upper()
                     db.execute('INSERT INTO listings(id,community_id,seller_id,title,price_vnd,condition,status,moderation_flags) VALUES (?,?,?,?,?,?,?,?)',
                                (id, event.community_id, event.sender_id, title, price, condition, 'draft', json.dumps(flags)))
+                    db.execute('UPDATE listings SET moderation_report=?, source_channel=? WHERE id=?',
+                               (report.model_dump_json(), event.source_channel, id))
                     result = {'listing_id': id, 'status': 'draft',
                               'reply': f'Bản nháp {id}: {title}, {price:,}đ, {condition}. Nhắn xacnhan {id} để gửi BQL duyệt.'}
             elif command in ('xacnhan', 'daban'):

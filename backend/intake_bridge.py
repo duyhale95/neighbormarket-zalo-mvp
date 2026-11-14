@@ -8,8 +8,11 @@ import os
 from typing import Literal, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, StrictBool, field_validator
+from starlette.concurrency import run_in_threadpool
+
+from backend.channels import normalize_deplao
 
 
 class IntakeEvent(BaseModel):
@@ -32,7 +35,9 @@ class IntakeEvent(BaseModel):
 
 
 def create_intake_app(backend_url: str, backend_key: str, intake_key: str,
-                      community_id: str, *, client: Optional[httpx.Client] = None) -> FastAPI:
+                      community_id: str, *, client: Optional[httpx.Client] = None,
+                      account_id: str | None = None,
+                      allowed_sender_ids: set[str] | None = None) -> FastAPI:
     """Create a bridge; only a trusted connector may call its /intake endpoint."""
     if not all(value and value.strip() for value in (backend_url, backend_key, intake_key, community_id)):
         raise ValueError('Backend URL, distinct keys and community ID must be configured')
@@ -45,13 +50,18 @@ def create_intake_app(backend_url: str, backend_key: str, intake_key: str,
         if not hmac.compare_digest(x_intake_key.encode(), intake_key.encode()):
             raise HTTPException(status_code=401, detail='Invalid intake key')
 
-    @app.post('/intake', dependencies=[Depends(authenticate)])
-    def intake(event: IntakeEvent):
+    @app.get('/health')
+    def health():
+        return {'status': 'ok', 'connector': 'unverified', 'mode': 'trusted-intake',
+                'text_only': True, 'account_configured': bool(account_id)}
+
+    def forward(event: IntakeEvent, source_channel: str = 'legacy'):
         if event.is_self or event.thread_type != 'private':
             return {'ignored': True, 'thread_id': event.thread_id, 'reply': ''}
         payload = {'event_id': event.message_id, 'community_id': community_id,
                    'sender_id': event.sender_id, 'text': event.text,
-                   'thread_type': event.thread_type, 'is_self': event.is_self}
+                   'thread_type': event.thread_type, 'is_self': event.is_self,
+                   'source_channel': source_channel}
         try:
             if client is None:
                 response = httpx.post(endpoint, json=payload, headers={'X-API-Key': backend_key}, timeout=8.0)
@@ -76,9 +86,50 @@ def create_intake_app(backend_url: str, backend_key: str, intake_key: str,
             reply = 'Hệ thống tạm thời chưa xác định được kết quả. Vui lòng liên hệ BQL kiểm tra.'
         return {'ignored': False, 'thread_id': event.thread_id, 'reply': reply}
 
+    @app.post('/intake', dependencies=[Depends(authenticate)])
+    async def intake(request: Request):
+        # Bound the stream even if Content-Length is absent or dishonest.
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 20000:
+                raise HTTPException(413, 'Message too large')
+        content_type = request.headers.get('content-type', '').split(';')[0].strip().lower()
+        try:
+            if content_type == 'application/json':
+                event = IntakeEvent.model_validate_json(raw)
+                return await run_in_threadpool(forward, event)
+            if content_type != 'text/plain':
+                raise HTTPException(415, 'Use application/json or text/plain')
+            if not account_id:
+                raise HTTPException(503, 'Configure the trusted account before Deplao intake')
+            text = raw.decode('utf-8')
+            if not text.startswith('NM-TEXT:\n'):
+                raise ValueError('Missing fixed raw-text prefix')
+            headers = request.headers
+            account = headers.get('x-zalo-account', '')
+            sender = headers.get('x-zalo-sender', '')
+            if account != account_id or (allowed_sender_ids is not None and sender not in allowed_sender_ids):
+                raise HTTPException(403, 'Account or sender outside configured scope')
+            if headers.get('x-zalo-self') not in ('true', 'false') or headers.get('x-zalo-thread-type') not in ('0', '1'):
+                raise ValueError('Missing trusted metadata')
+            message = normalize_deplao({'zaloId': account, 'fromId': sender,
+                'threadId': headers.get('x-zalo-thread', ''), 'msgId': headers.get('x-zalo-message', ''),
+                'threadType': int(headers['x-zalo-thread-type']), 'isSelf': headers['x-zalo-self'] == 'true',
+                'content': text[len('NM-TEXT:\n'):]}, account_id)
+            if message is None:
+                return {'ignored': True, 'thread_id': headers.get('x-zalo-thread', ''), 'reply': ''}
+            event = IntakeEvent(message_id=message.event_id, sender_id=message.sender_id,
+                thread_id=message.thread_id, thread_type='private', is_self=False, text=message.text)
+            return await run_in_threadpool(forward, event, 'deplao')
+        except (ValueError, UnicodeError):
+            raise HTTPException(422, 'Malformed text or transport metadata') from None
+
     return app
 
 
 def from_environment() -> FastAPI:
     return create_intake_app(os.environ['BACKEND_URL'], os.environ['BRIDGE_API_KEY'],
-                             os.environ['INTAKE_API_KEY'], os.environ['COMMUNITY_ID'])
+                             os.environ['INTAKE_API_KEY'], os.environ['COMMUNITY_ID'],
+                             account_id=os.getenv('ZALO_ACCOUNT_ID'),
+                             allowed_sender_ids=set(filter(None, os.getenv('ZALO_TEST_SENDER_IDS', '').split(','))) or None)
