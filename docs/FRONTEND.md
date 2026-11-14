@@ -69,6 +69,19 @@ dashboard and show setup instructions. Restart after environment changes.
 - If script execution is blocked, set
   `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned` in that
   window, then run `.\run-local.ps1` again.
+- Windows PowerShell 5.1 does not provide static
+  `RandomNumberGenerator.GetBytes(length)` or `Convert.ToHexString`. Generate
+  new demo credentials with the existing Python interpreter instead:
+
+  ```powershell
+  $password = & ..\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(16))"
+  $secret = & ..\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"
+  ```
+
+  Run these from `frontend/`. Only save new credentials to `.env.local` after
+  both commands succeed. Preserve existing nonempty credentials. If an earlier
+  attempt saved empty values, fill `BQL_DEMO_PASSWORD` and `BQL_SESSION_SECRET`
+  and restart Next.js. Keep the file and generated values private.
 
 ## Routes and integration
 
