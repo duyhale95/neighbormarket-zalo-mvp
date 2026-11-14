@@ -1,6 +1,9 @@
 """Optional, bounded OpenAI extraction; no business actions are delegated to the model."""
 import json
 import os
+import re
+import unicodedata
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 import httpx
@@ -31,6 +34,56 @@ SCHEMA = {
 }
 
 
+
+def normalized_text(text: str) -> str:
+    folded = unicodedata.normalize('NFD', text.casefold().replace('đ', 'd'))
+    folded = ''.join(c for c in folded if unicodedata.category(c) != 'Mn')
+    return ' '.join(re.findall(r'\w+', folded))
+
+
+def price_is_grounded(text: str, price: int) -> bool:
+    # A bare number may be VND, but an explicit time/quantity unit is not a price.
+    folded = unicodedata.normalize('NFD', text.casefold().replace('đ', 'd'))
+    folded = ''.join(c for c in folded if unicodedata.category(c) != 'Mn')
+    pattern = r'(?<![\d.,])(\d+(?:[.,]\d+)*)(?:\s*(nghin|ngan|trieu|vnd|dong|k)\b)?(?![\d.,])'
+    for match in re.finditer(pattern, folded):
+        number, unit = match.groups()
+        tail = folded[match.end():]
+        if not unit and re.match(r'\s*(nam|thang|tuan|ngay|gio|tuoi|cai|chiec)\b', tail):
+            continue
+        try:
+            if unit in ('nghin', 'ngan', 'k', 'trieu'):
+                if number.count('.') + number.count(',') > 1:
+                    continue
+                value = Decimal(number.replace(',', '.')) * (1_000_000 if unit == 'trieu' else 1_000)
+            elif re.fullmatch(r'\d{1,3}(?:[.,]\d{3})+', number):
+                value = Decimal(number.replace('.', '').replace(',', ''))
+            elif '.' not in number and ',' not in number:
+                value = Decimal(number)
+            else:
+                continue
+            if value == price:
+                return True
+        except InvalidOperation:
+            continue
+    return False
+
+
+def ground_extraction(extraction: ListingExtraction, text: str) -> dict:
+    result = extraction.model_dump()
+    missing = set(result['missing_fields'])
+    price = result['price_vnd']
+    if price is not None and not price_is_grounded(text, price):
+        result['price_vnd'] = None
+        missing.add('price_vnd')
+    condition = result['condition']
+    if condition and (' ' + normalized_text(condition) + ' ') not in (' ' + normalized_text(text) + ' '):
+        result['condition'] = None
+        missing.add('condition')
+    result['missing_fields'] = sorted(missing)
+    return result
+
+
 def extract_listing(text: str) -> dict | None:
     """Return validated extraction, or None when the optional service is unavailable."""
     key = os.getenv('OPENAI_API_KEY', '').strip()
@@ -59,6 +112,7 @@ def extract_listing(text: str) -> dict | None:
         texts = [part['text'] for part in contents if part.get('type') == 'output_text']
         if len(texts) != 1:
             return None
-        return ListingExtraction.model_validate_json(texts[0]).model_dump()
-    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return ground_extraction(ListingExtraction.model_validate_json(texts[0]), text)
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
         return None
+

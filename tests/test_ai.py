@@ -92,7 +92,30 @@ class OpenAIContractTests(unittest.TestCase):
         def post(url, **kwargs):
             return httpx.Client(transport=httpx.MockTransport(handler)).post(url, **kwargs)
         with patch.dict('os.environ', {'AI_ENABLED': 'true', 'OPENAI_API_KEY': 'fake', 'OPENAI_MODEL': 'test-model'}), patch('backend.ai.httpx.post', side_effect=post):
-            self.assertEqual(extract_listing('Bán bàn học'), extracted)
+            self.assertEqual(extract_listing('Bán bàn học giá 400 nghìn đã dùng 1 năm'), extracted)
+
+    def test_prices_and_condition_must_be_grounded_in_message(self):
+        for message, expected_price in [('Bàn cũ 400 nghìn', 400000), ('Bàn cũ 1 triệu', 1000000),
+                                        ('Bàn cũ 400000', 400000), ('Bàn cũ 400.000', 400000)]:
+            extraction = {'intent': 'sell', 'title': 'Bàn', 'price_vnd': expected_price,
+                          'condition': 'cũ', 'missing_fields': [], 'risk_flags': []}
+            response = httpx.Response(200, request=httpx.Request('POST', 'https://example.test'),
+                json={'status': 'completed', 'output': [{'type': 'message', 'content': [
+                    {'type': 'output_text', 'text': json.dumps(extraction)}]}]})
+            with self.subTest(message=message), patch.dict('os.environ', {'AI_ENABLED': 'true', 'OPENAI_API_KEY': 'fake'}), patch('backend.ai.httpx.post', return_value=response):
+                self.assertEqual(extract_listing(message), extraction)
+
+    def test_ungrounded_price_and_condition_are_removed(self):
+        extraction = {'intent': 'sell', 'title': 'Bàn', 'price_vnd': 400000,
+                      'condition': 'mới tinh', 'missing_fields': [], 'risk_flags': []}
+        response = httpx.Response(200, request=httpx.Request('POST', 'https://example.test'),
+            json={'status': 'completed', 'output': [{'type': 'message', 'content': [
+                {'type': 'output_text', 'text': json.dumps(extraction)}]}]})
+        with patch.dict('os.environ', {'AI_ENABLED': 'true', 'OPENAI_API_KEY': 'fake'}), patch('backend.ai.httpx.post', return_value=response):
+            result = extract_listing('Bàn đã dùng 1 năm, chưa nói giá')
+        self.assertIsNone(result['price_vnd'])
+        self.assertIsNone(result['condition'])
+        self.assertEqual(set(result['missing_fields']), {'price_vnd', 'condition'})
 
     def test_refusal_and_invalid_schema_return_fallback(self):
         for content in ([{'type': 'refusal', 'refusal': 'No'}],
@@ -102,6 +125,11 @@ class OpenAIContractTests(unittest.TestCase):
                     json={'status': 'completed', 'output': [{'type': 'message', 'content': content}]})
                 with patch.dict('os.environ', {'AI_ENABLED': 'true', 'OPENAI_API_KEY': 'fake'}), patch('backend.ai.httpx.post', return_value=response):
                     self.assertIsNone(extract_listing('text'))
+
+    def test_unexpected_response_shape_returns_fallback(self):
+        response = httpx.Response(200, request=httpx.Request('POST', 'https://example.test'), json=[])
+        with patch.dict('os.environ', {'AI_ENABLED': 'true', 'OPENAI_API_KEY': 'fake'}), patch('backend.ai.httpx.post', return_value=response):
+            self.assertIsNone(extract_listing('text'))
 
     def test_disabled_or_missing_key_avoids_network(self):
         with patch.dict('os.environ', {'AI_ENABLED': 'false', 'OPENAI_API_KEY': ''}), patch('backend.ai.httpx.post') as post:
