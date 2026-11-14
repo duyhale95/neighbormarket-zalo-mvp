@@ -3,13 +3,14 @@ import hmac
 import json
 import os
 import sqlite3
+import secrets
 import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field, ValidationError
 import httpx
 
@@ -32,12 +33,29 @@ class Review(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class DeliveryAck(BaseModel):
+    claim_token: str = Field(min_length=1, max_length=200)
+    sent_message_id: str | None = Field(default=None, max_length=200)
+
+
+class DeliveryFailure(BaseModel):
+    claim_token: str = Field(min_length=1, max_length=200)
+    outcome: Literal['not_sent', 'unknown']
+    error: str = Field(min_length=1, max_length=200)
+
+
+class DeliveryReconciliation(BaseModel):
+    decision: Literal['sent', 'not_sent']
+    reason: str = Field(min_length=1, max_length=1000)
+    sent_message_id: str | None = Field(default=None, max_length=200)
+
+
 def normalize(value):
     value = unicodedata.normalize('NFD', value.casefold().replace('đ', 'd'))
     return ''.join(c for c in value if unicodedata.category(c) != 'Mn')
 
 
-def create_app(db_path, bridge_key, admin_key):
+def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_community_id='demo'):
     if not bridge_key or not admin_key or bridge_key == admin_key:
         raise ValueError('Configure two different nonempty API keys')
     db_path = Path(db_path)
@@ -68,6 +86,20 @@ def create_app(db_path, bridge_key, admin_key):
                 listing_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS listing_deliveries (
+                id TEXT PRIMARY KEY, listing_id TEXT NOT NULL, community_id TEXT NOT NULL,
+                target_group_id TEXT NOT NULL, status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0, claim_token TEXT,
+                claimed_at TEXT, lease_expires_at TEXT, last_error TEXT,
+                sent_message_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(listing_id, target_group_id)
+            );
+            CREATE TABLE IF NOT EXISTS delivery_reconciliations (
+                delivery_id TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL,
+                reviewer TEXT NOT NULL DEFAULT 'admin-key',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE INDEX IF NOT EXISTS listings_scope ON listings(community_id, status);
         ''')
         columns = {row['name'] for row in db.execute('PRAGMA table_info(listings)')}
@@ -81,6 +113,28 @@ def create_app(db_path, bridge_key, admin_key):
             if not hmac.compare_digest(x_api_key.encode(), expected.encode()):
                 raise HTTPException(401, 'Invalid API key')
         return check
+
+    def expire_claims(db):
+        # An expired worker may have sent already: never requeue automatically.
+        db.execute("""UPDATE listing_deliveries SET status='unknown',
+                      last_error='claim_expired', updated_at=CURRENT_TIMESTAMP
+                      WHERE status='claimed' AND lease_expires_at <= CURRENT_TIMESTAMP""")
+
+    def public_delivery(row):
+        return {key: row[key] for key in (
+            'id', 'listing_id', 'community_id', 'target_group_id', 'status',
+            'attempts', 'last_error', 'sent_message_id', 'created_at', 'updated_at')}
+
+    def require_claim(db, delivery_id, claim_token):
+        row = db.execute('SELECT * FROM listing_deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Delivery not found')
+        if not row['claim_token'] or not hmac.compare_digest(row['claim_token'], claim_token):
+            raise HTTPException(409, 'Invalid or stale claim')
+        return row
+
+    def public_text(value):
+        return ' '.join(value.split())
 
     @app.get('/health')
     def health():
@@ -102,11 +156,104 @@ def create_app(db_path, bridge_key, admin_key):
                 raise HTTPException(404, 'Listing not found')
             if row['status'] != 'pending':
                 raise HTTPException(409, 'Only pending listings may be reviewed')
+            if request.action == 'approve' and 'sensitive_information' in moderation_flags(row['title'], row['condition']):
+                raise HTTPException(422, 'Thông tin liên hệ nhạy cảm: từ chối và yêu cầu người bán viết lại.')
             status = 'approved' if request.action == 'approve' else 'rejected'
             db.execute('UPDATE listings SET status=? WHERE id=?', (status, listing_id))
             db.execute('INSERT INTO reviews(listing_id,action,reason) VALUES (?,?,?)',
                        (listing_id, request.action, request.reason))
-            return {'listing_id': listing_id, 'status': status}
+            delivery_status = 'not_applicable' if status == 'rejected' else 'not_configured'
+            if status == 'approved' and target_group_id and request.community_id == target_community_id:
+                db.execute('INSERT INTO listing_deliveries(id,listing_id,community_id,target_group_id,status) VALUES (?,?,?,?,?)',
+                           (uuid4().hex, listing_id, request.community_id, target_group_id, 'queued'))
+                delivery_status = 'queued'
+            return {'listing_id': listing_id, 'status': status, 'delivery_status': delivery_status}
+
+    @app.post('/deliveries/claim', dependencies=[Depends(authenticate(bridge_key))])
+    def claim_delivery():
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            expire_claims(db)
+            if not target_group_id:
+                return Response(status_code=204)
+            row = db.execute("""SELECT d.*, l.title, l.condition, l.price_vnd FROM listing_deliveries d
+                JOIN listings l ON l.id=d.listing_id AND l.community_id=d.community_id
+                WHERE d.status='queued' AND l.status='approved' AND d.target_group_id=?
+                AND d.community_id=? ORDER BY d.rowid LIMIT 1""", (target_group_id, target_community_id)).fetchone()
+            if not row:
+                return Response(status_code=204)
+            if 'sensitive_information' in moderation_flags(row['title'], row['condition']):
+                db.execute("UPDATE listing_deliveries SET status='failed', last_error='sensitive_information', updated_at=CURRENT_TIMESTAMP WHERE id=?", (row['id'],))
+                return Response(status_code=204)
+            token = secrets.token_urlsafe(32)
+            db.execute("""UPDATE listing_deliveries SET status='claimed', attempts=attempts+1,
+                claim_token=?, claimed_at=CURRENT_TIMESTAMP,
+                lease_expires_at=datetime('now','+5 minutes'), updated_at=CURRENT_TIMESTAMP WHERE id=?""", (token, row['id']))
+            message = (f"[NEIGHBORMARKET — TIN ĐÃ DUYỆT]\n\nSản phẩm: {public_text(row['title'])}\n"
+                       f"Giá: {row['price_vnd']:,}đ\nTình trạng: {public_text(row['condition'])}\n\n"
+                       f"Mã tin: {row['listing_id']}\n\nNhắn riêng cho Meo Meo để tìm hiểu sản phẩm.")
+            return {'delivery_id': row['id'], 'claim_token': token, 'group_id': row['target_group_id'],
+                    'message': message, 'attempt': row['attempts'] + 1}
+
+    @app.post('/deliveries/{delivery_id}/sent', dependencies=[Depends(authenticate(bridge_key))])
+    def delivery_sent(delivery_id: str, request: DeliveryAck):
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            expire_claims(db)
+            row = require_claim(db, delivery_id, request.claim_token)
+            if row['status'] == 'sent' and row['sent_message_id'] == request.sent_message_id:
+                return {'delivery_id': delivery_id, 'status': 'sent'}
+            if row['status'] not in ('claimed', 'unknown'):
+                raise HTTPException(409, 'Delivery cannot be acknowledged')
+            db.execute("UPDATE listing_deliveries SET status='sent', sent_message_id=?, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?", (request.sent_message_id, delivery_id))
+            return {'delivery_id': delivery_id, 'status': 'sent'}
+
+    @app.post('/deliveries/{delivery_id}/failure', dependencies=[Depends(authenticate(bridge_key))])
+    def delivery_failure(delivery_id: str, request: DeliveryFailure):
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            expire_claims(db)
+            row = require_claim(db, delivery_id, request.claim_token)
+            if row['status'] != 'claimed':
+                raise HTTPException(409, 'Delivery is no longer claimed')
+            status = 'unknown' if request.outcome == 'unknown' else 'failed'
+            # Do not persist arbitrary SDK errors that might contain credentials.
+            error = request.error if request.error in ('timeout', 'connection_error', 'send_rejected') else 'other'
+            db.execute('UPDATE listing_deliveries SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', (status, error, delivery_id))
+            return {'delivery_id': delivery_id, 'status': status}
+
+    @app.get('/deliveries', dependencies=[Depends(authenticate(admin_key))])
+    def deliveries(community_id: str = Query(min_length=1, max_length=100)):
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            expire_claims(db)
+            return [public_delivery(row) for row in db.execute('SELECT * FROM listing_deliveries WHERE community_id=? ORDER BY rowid DESC LIMIT 100', (community_id,))]
+
+    @app.get('/deliveries/{delivery_id}', dependencies=[Depends(authenticate(bridge_key))])
+    def delivery_status(delivery_id: str):
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            expire_claims(db)
+            row = db.execute('SELECT * FROM listing_deliveries WHERE id=?', (delivery_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, 'Delivery not found')
+            return public_delivery(row)
+
+    @app.post('/deliveries/{delivery_id}/reconcile', dependencies=[Depends(authenticate(admin_key))])
+    def reconcile_delivery(delivery_id: str, request: DeliveryReconciliation):
+        with database() as db:
+            db.execute('BEGIN IMMEDIATE')
+            expire_claims(db)
+            row = db.execute('SELECT * FROM listing_deliveries WHERE id=?', (delivery_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, 'Delivery not found')
+            if row['status'] != 'unknown':
+                raise HTTPException(409, 'Only unknown deliveries may be reconciled')
+            status = 'sent' if request.decision == 'sent' else 'failed'
+            db.execute('INSERT INTO delivery_reconciliations(delivery_id,decision,reason) VALUES (?,?,?)', (delivery_id, request.decision, request.reason))
+            db.execute('UPDATE listing_deliveries SET status=?, sent_message_id=?, claim_token=NULL, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                       (status, request.sent_message_id if status == 'sent' else None, None if status == 'sent' else 'reconciled_not_sent', delivery_id))
+            return {'delivery_id': delivery_id, 'status': status}
 
     @app.post('/events', dependencies=[Depends(authenticate(bridge_key))])
     def event(event: Event):
@@ -174,6 +321,12 @@ def create_app(db_path, bridge_key, admin_key):
                 required, status = ('draft', 'pending') if command == 'xacnhan' else ('approved', 'sold')
                 if row['status'] != required:
                     raise HTTPException(409, 'Listing is not in the required state')
+                if status == 'sold':
+                    expire_claims(db)
+                    in_flight = db.execute("SELECT 1 FROM listing_deliveries WHERE listing_id=? AND status IN ('claimed','unknown')", (body,)).fetchone()
+                    if in_flight:
+                        raise HTTPException(409, 'Tin đang gửi hoặc cần BQL đối soát trước khi báo đã bán')
+                    db.execute("UPDATE listing_deliveries SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE listing_id=? AND status='queued'", (body,))
                 db.execute('UPDATE listings SET status=? WHERE id=?', (status, body))
                 result = {'listing_id': body, 'status': status,
                           'reply': 'Đã gửi BQL duyệt.' if status == 'pending' else 'Đã đánh dấu bán xong.'}
@@ -182,7 +335,8 @@ def create_app(db_path, bridge_key, admin_key):
                 if not terms:
                     raise HTTPException(422, 'Nhập từ khóa sau tim')
                 rows = db.execute("SELECT id,title,price_vnd,condition FROM listings WHERE community_id=? AND status='approved' ORDER BY rowid DESC", (event.community_id,))
-                found = [dict(r) for r in rows if all(term in normalize(r['title'] + ' ' + r['condition']) for term in terms)][:5]
+                found = [dict(r) for r in rows if 'sensitive_information' not in moderation_flags(r['title'], r['condition'])
+                         and all(term in normalize(r['title'] + ' ' + r['condition']) for term in terms)][:5]
                 result = {'listings': found, 'reply': '\n'.join(f"{r['id']} — {r['title']} — {r['price_vnd']:,}đ" for r in found) or 'Chưa có tin phù hợp đã được duyệt.'}
             else:
                 result = {'reply': 'Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh.'}
@@ -194,4 +348,6 @@ def create_app(db_path, bridge_key, admin_key):
 
 def from_environment():
     return create_app(os.getenv('DATABASE_PATH', 'private/market.db'),
-                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'])
+                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'],
+                      target_group_id=os.getenv('ZALO_LEGIT_GROUP_ID'),
+                      target_community_id=os.getenv('ZALO_COMMUNITY_ID', 'demo'))
