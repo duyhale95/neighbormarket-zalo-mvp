@@ -51,12 +51,12 @@
 ## Tasks / execution ledger
 
 - [x] P0 compare/audit/baselines and existing worktree verified.
-- [ ] P2 tests first: private image processing, optional moderator and guarded bridge intake. Implement backend/images.py + image_fetch.py; mount routes through existing auth/DB; test red then green, commit.
-- [ ] P3/P4 tests first: delivery_parts snapshots/order/receipts/reconcile and sold notices, improve compact Vietnamese messages. Implement backend/delivery_parts.py and adapt app/publisher/channels; legacy suite green, commit.
-- [ ] P5 extend optional contracts/BFF/image review and delivery details; frontend unit + production HTTP checks; preserve landing/auth; commit.
-- [ ] P6 extend one gated generator with image intake/publisher v2; inspect inventory; archive/remove only proven redundant files; document WORKFLOW_CLEANUP.md.
-- [ ] P7 full backend/frontend/build, offline text + image demos, browser QA, independent security review and regression fixes.
-- [ ] P8 update startup/config/live limits, scan staged files, logical commits and normal push to existing target branch.
+- [x] P2 private image processing, optional moderator and guarded bridge intake (checkpoint 393d0d9).
+- [x] P3/P4 delivery_parts snapshots/order/receipts/reconcile, sold notices, Vietnamese messages (checkpoint 393d0d9).
+- [x] P5 contracts/BFF/image review and delivery details (checkpoint 6a36e86); production HTTP media checks and browser QA added on resume.
+- [x] P6 generator image intake/publisher v2 (checkpoint); read-only `tools/workflow_inventory.py` and WORKFLOW_CLEANUP.md on resume. Nothing deleted.
+- [x] P7 full checks, both offline demos, Edge browser QA at 3 widths, Priority-2 regression suite (tests/test_media_regressions.py), independent review.
+- [x] P8 startup/config/live-limit docs, staged-file scan, logical commits, normal push.
 
 Ruling: OpenAI remains the only configured cloud provider; Gemini is deferred because the target already covers persistent multi-turn extraction. This avoids two models/engines and leaves broader Gemini phrasing unsupported.
 
@@ -64,7 +64,28 @@ Ruling: Keep sold blocked during claimed/unknown publication, preserving the tar
 
 Ruling: Local inventory currently has only private/local-config.json and private/market.db; no generated private workflows to delete. The tracked independent Gemini example is retained for recovery and documented as obsolete/disabled, until a replacement has been verified live. No claims of active Deplao state can be made from files alone.
 
-## Paused checkpoint — explicit user request, 14 November 2026
+## Resume — 14 November 2026 (completes the remaining items below)
+
+Resumed from 1578648 on another Windows checkout (`C:\build-phase\neighbormarket-zalo-mvp`);
+same branch, no new branch/worktree. Results are in MAIN_INTEGRATION_CHECKPOINT.md.
+
+1. Media HTTP/browser QA: done (63 HTTP, 38 browser checks, synthetic fixture).
+2. Security/concurrency regressions: `tests/test_media_regressions.py` covers late
+   moderation vs recheck, model call outside the write lock, concurrent uploads at
+   the 5-image limit, duplicate concurrent image events, draft confirmed during
+   fetch, duplicate/mismatched ACKs, lost cover ACK then late ACK, unknown cover
+   reconciled then only the next part, definitive failure blocking later parts,
+   failure after cover receipt still yielding one sold notice, image bytes or
+   exported file changed after approval, media dir escaping via path or junction,
+   sold while unknown, migration of pre-image queued/sent rows. Two defects found
+   and fixed (v1 claim head-of-line block; multipart reconcile without part_id).
+3. Workflow inventory/redacted comparison: WORKFLOW_CLEANUP.md. No deletions.
+4. Docs updated: README, .env.example, integration, mentor, frontend, this file.
+5. Supplemental photos for approved listings: deliberately not supported; explicit
+   refusal message to the seller; documented.
+6. Live Zalo/Deplao evidence: still entirely unverified.
+
+## Paused checkpoint — explicit user request, 14 November 2026 (historical)
 
 Implementation is approximately 65% of the requested scope. This is a checkpoint,
 not a completed integration release. Resume only after the user says to continue.

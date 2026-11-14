@@ -21,6 +21,12 @@ poller or second marketplace service is started.
 | Real group post appears | **Unverified** |
 | Real Zalo receipt matches saved message ID | **Unverified** |
 | DB status updated after real receipt | **Unverified** |
+| Photo PM metadata (`$trigger.images.0`) on installed build | **Unverified** |
+| Real `sendImage` cover/extra photos and their receipts | **Unverified** |
+| Real sold notice in the group | **Unverified** |
+| OpenAI image moderation call | **Never called**; tests use stubs/mock HTTP |
+| Image/multipart offline demo | Passed; synthetic moderator stub, mock receipts |
+| BQL media via real Next.js BFF | 36 HTTP checks + 38 Edge browser checks, synthetic fixture |
 
 Only the operator should mark a live row complete, recording local timestamp,
 workflow run ID, listing/delivery IDs, and observed group receipt. Keep actual
@@ -30,13 +36,22 @@ inputs (including header secrets): protect its local logs and never upload them.
 
 ## A. Fully offline fallback — works without a Zalo account or model key
 
-At the feature checkout, e.g. `C:\Users\Admin\neighbormarket-zalo-mvp`:
+At the repository root of the feature checkout (any path; examples below use
+`<repo>`):
 
 ```powershell
 if (-not (Test-Path .venv\Scripts\python.exe)) { python -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m tools.offline_demo
+.\.venv\Scripts\python.exe -m tools.offline_media_demo
 ```
+
+`offline_media_demo` adds two generated colour images to a draft, has BQL approve
+with the image review token, publishes in `photos_v2` order (cover with caption,
+additional photo, listing code) through `MockZaloTransport`, then marks the item
+sold and publishes one sold notice. Expected: four distinct `mock-*` receipts,
+`duplicate_send: false`, `sold_removed_from_search: true`. Its moderator is a
+labelled stub, not image understanding.
 
 After dependencies are installed this needs no network. It creates and removes
 a disposable SQLite database, explicitly disables cloud AI, sends nothing to
@@ -70,11 +85,13 @@ Do not clone over an existing directory or recreate an active `.venv`. Check
 Use the same directory for all services; do not mix keys from the demo checkout
 with another checkout. No `pwsh` command is required.
 
-Terminal 1 (backend initialization, text-only/no paid model):
+Terminal 1 (backend initialization, no paid model):
 
 ```powershell
-Set-Location C:\Users\Admin\neighbormarket-zalo-mvp
+Set-Location <repo>
 $env:AI_ENABLED = 'false'
+$env:IMAGE_MODERATION_ENABLED = 'false'   # images -> 'unavailable', manual evidence required
+$env:ZALO_PUBLICATION_MODE = 'photos_v2'  # omit for the original single text post
 $env:ZALO_COMMUNITY_ID = 'demo'
 $env:ZALO_LEGIT_GROUP_ID = 'mock-legit-group'
 .\run-local.ps1
@@ -99,11 +116,16 @@ code never changes group permissions or invites anyone.
 Only after those checks, replace numeric placeholders with metadata IDs:
 
 ```powershell
-.\.venv\Scripts\python.exe -m tools.build_deplao_workflows --account-id ACCOUNT_ID --sender-id TESTER_ID --group-id GROUP_ID --community demo --deplao-source C:\path\to\reviewed-strict-deplao --installed-build-verified --policy-validated
+.\.venv\Scripts\python.exe -m tools.build_deplao_workflows --account-id ACCOUNT_ID --sender-id TESTER_ID --group-id GROUP_ID --community demo --deplao-source C:\path\to\reviewed-strict-deplao --installed-build-verified --policy-validated --publication-mode photos_v2
 ```
 
-This writes `private/deplao-intake.json`, `private/deplao-publisher.json` and
-`private/zalo-channel.json`. It refuses existing output files; preserve/review
+This writes `private/deplao-intake.json`, `private/deplao-publisher-v2.json` and
+`private/zalo-channel.json`. Only after a real photo PM has shown the trigger's
+image metadata on the installed build, add `--enable-images --image-metadata-verified`
+to also write `private/deplao-image-intake.json` and set `images_enabled` in the
+manifest (requires `--publication-mode photos_v2`). `run-local.ps1` then exports
+`ZALO_PUBLICATION_MODE` and `ZALO_IMAGES_ENABLED` from the manifest. See
+WORKFLOW_CLEANUP.md for which older imports to disable first. It refuses existing output files; preserve/review
 them before regenerating. The flag is an operator attestation, not an automated
 verification of Zalo rights or installed source. Source must match the reviewed
 strict engine hash; unmodified/unknown builds fail closed. No workflow is imported/enabled and no message is
@@ -116,7 +138,7 @@ made without a matching target create no job and are not automatically backfille
 Terminal 2 (trusted transport adapter, no business database):
 
 ```powershell
-Set-Location C:\Users\Admin\neighbormarket-zalo-mvp
+Set-Location <repo>
 .\run-intake.ps1
 ```
 
@@ -126,7 +148,7 @@ from the private config, and has no standalone listing/review state.
 Terminal 3 (Next.js, see FRONTEND.md for full env setup):
 
 ```powershell
-Set-Location C:\Users\Admin\neighbormarket-zalo-mvp\frontend
+Set-Location <repo>\frontend
 npm ci
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 notepad .env.local
@@ -219,12 +241,27 @@ does not requeue. This avoids blind duplicates; it does not promise exactly-once
 delivery from an external Zalo client. On connector failure continue with the
 offline five-scene demo and explicitly say that no live send was verified.
 
+## Photos in a live attempt (only after section C passes for text)
+
+1. Seller sends the draft text, then up to 5 photos **before** `ok`. Photos sent
+   after confirmation are refused with an explicit reply, never attached.
+2. In `/bql/listings` open the item: thumbnails come through the authenticated BFF.
+   With moderation disabled every photo is "Chưa kiểm tra tự động": look at each
+   image, tick the manual-evidence box and write what you checked in the reason.
+   If you upload/recheck in the dialog, the token changes and the box resets.
+3. `/bql/deliveries` expands per-part status. Verify in the group: cover photo
+   with caption, then extra photos, then the code — one per 20-second tick — and
+   that each part's receipt equals the group message. `daban` adds one sold notice.
+4. If a part is `unknown`, stop the publisher, check the group, and reconcile that
+   exact part (the dialog names it). Later parts resume only after `sent`.
+
 ## Deliberate limits
 
-Text only. Attachments are not downloaded, understood, stored or published.
+No supplemental photos for an already-approved listing (no silent mutation of
+reviewed content); no recall/edit of a group post; no image authenticity check.
 No Gemini fallback, guessed price, autonomous approval, individual BQL accounts,
-automatic Zalo reconnect/login, group permission edits, old-message deletion,
-sold group notices or retries. OpenAI extraction is optional and uses a bounded
+automatic Zalo reconnect/login, group permission edits, old-message deletion
+or retries. OpenAI extraction is optional and uses a bounded
 validated schema; its risk flag is advisory, not a separate calibrated AI safety
 classifier. Disabled/unavailable AI falls back to narrow Vietnamese patterns and
 legacy commands. Conversations currently have no TTL/retention UI; protect the

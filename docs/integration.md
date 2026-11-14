@@ -63,6 +63,76 @@ Backend ghi audit JSON với các trường metadata được chọn cho event, 
 - `POST /deliveries/{id}/failure`, bridge key: gửi `claim_token`, `outcome` là `not_sent` hoặc `unknown`, và `error` ngắn. Chỉ dùng `not_sent` nếu chắc chắn chưa gửi; khi không chắc, dùng `unknown`. Claim hết hạn cũng thành `unknown`, không tự retry.
 - `GET /deliveries?community_id=demo`, admin key, hoặc `GET /deliveries/{id}`, bridge key: xem trạng thái. BQL đối soát bằng `POST /deliveries/{id}/reconcile`, admin key, với `decision: sent` hoặc `not_sent` và `reason`; `not_sent` thành `failed`, không tự đưa lại vào hàng đợi.
 
+## Ảnh sản phẩm (private) và kiểm duyệt ảnh
+
+Trạng thái: **đã cài và kiểm thử bằng dữ liệu tổng hợp**; moderation thật
+(OpenAI) **chưa từng được gọi**; nhận ảnh từ Zalo thật **chưa xác minh**.
+
+- `POST /listings/{id}/images` (admin key): JSON `{"community_id","image_base64"}`,
+  body tối đa 6 MiB. Nhận JPEG/PNG/WebP tĩnh ≤ 4 MiB, ≤ 16 triệu pixel, tối đa
+  5 ảnh/tin, chỉ khi tin `draft`/`pending`. Ảnh được chuẩn hóa JPEG ≤ 1600px,
+  bỏ EXIF/metadata, lưu trong SQLite (`listing_images`). Trùng nội dung trả ảnh cũ.
+- `GET /images/{id}?community_id=` (admin key): bytes JPEG, `Cache-Control: private,
+  no-store`, sandbox CSP. Sai community → 404. BQL xem qua BFF `/api/bql/images/{id}`.
+- `POST /images/{id}/recheck?community_id=` (admin key): tạo phiên bản mới; kết quả
+  moderation đến muộn của phiên bản cũ bị bỏ. Ảnh `pending` < 60 giây không recheck
+  được; sau 60 giây được coi là treo và có thể recheck. Tin đã duyệt: 409.
+- `POST /image-events` (bridge key): chỉ khi image intake bật qua manifest; xem dưới.
+- Trạng thái ảnh: `clear`, `flagged`, `pending`, `error`, `unavailable`, `stale`
+  (nội dung tin đổi sau khi kiểm tra). Moderation tắt/không có key → `unavailable`.
+  Model/network chạy **ngoài** transaction ghi SQLite (có test kiểm chứng).
+- `GET /listings` thêm `images[]` và `image_review_token` (SHA-256 của nội dung tin +
+  ID/digest/trạng thái/phiên bản ảnh). Approve tin có ảnh phải gửi token hiện tại;
+  token cũ → 409. Ảnh `pending` luôn chặn duyệt. Ảnh khác `clear` cần
+  `manual_image_review: true` và lý do; bằng chứng lưu vào `image_reviews`.
+  `clear` chỉ là "chưa bị gắn cờ", không xác minh hàng thật.
+
+Image intake qua adapter: `POST /intake/image`, `text/plain`, body
+`NM-IMAGE:\n<URL từ metadata trigger>`, cùng header metadata như text intake.
+Không bao giờ lấy URL/danh tính từ nội dung PM. Mặc định trả 503. Downloader chỉ
+nhận `https://photo-zalo.zadn.vn` và `photo-stal-N.zdn.vn` (cố ý từ chối `*.zcdn.me`),
+kiểm tra mọi DNS answer là địa chỉ global, pin IP đó khi kết nối nhưng giữ SNI/TLS
+hostname, không redirect/proxy, ≤ 4 MiB, ~8 giây, tối đa 2 tải song song, không log URL.
+Giới hạn đã biết: tra DNS (`getaddrinfo`) không có timeout riêng; resolver treo có thể
+giữ 2 slot tải tới khi hệ điều hành hết hạn, làm intake ảnh tạm báo bận (không ảnh
+hưởng text hay an toàn).
+Ảnh chỉ gắn vào **bản nháp chưa xác nhận** của đúng người gửi; nếu nháp đổi trong lúc
+tải, ảnh bị từ chối. Gửi ảnh sau khi đã xác nhận/duyệt nhận được câu trả lời rõ ràng
+là không bổ sung được (không âm thầm gắn).
+
+**Giới hạn có chủ ý — ảnh bổ sung cho tin đã duyệt:** không hỗ trợ. Làm an toàn cần
+revision mới + BQL duyệt lại + chỉ enqueue phần mới; chưa triển khai. Người bán tạo
+tin mới nếu cần đăng kèm ảnh.
+
+## Publisher nhiều phần (`delivery_parts`) và thông báo đã bán
+
+Trạng thái: **đã cài, kiểm thử bằng mock transport**; chưa gửi ảnh thật lên Zalo.
+
+`ZALO_PUBLICATION_MODE=photos_v2` (mặc định `single`) làm approval **mới** tạo các
+phần con dưới đúng một `listing_deliveries`: `cover_photo_with_caption` (hoặc
+`post_text` nếu không có ảnh), `additional_photo`…, `listing_code`. Nội dung từng
+phần là snapshot lúc duyệt; ảnh được kiểm digest khi export.
+
+- Claim với `X-Publisher-Version: 2` trả thêm `part_id`, `part_type`, `has_image`,
+  `image_path` (file JPEG trong `private/group-media/`, tên = part ID). Thứ tự bắt
+  buộc: phần sau chỉ được claim khi mọi phần trước `sent`/`cancelled`.
+  Snapshot/ảnh/đường dẫn export thay đổi (kể cả symlink/junction ra ngoài) → phần
+  `failed` (`stale_snapshot`/`unsafe_media`), không gửi.
+- Publisher v1 (không header) chỉ nhận job không có phần con; job nhiều phần không
+  còn chặn hàng đợi v1. Publisher v2 cũng gửi tin `single` (tự tạo một `post_text`).
+- `POST /deliveries/{id}/sent|failure` thêm `part_id`; ACK phần bắt buộc có receipt
+  rõ (`mock-*` hoặc msgId số Deplao). ACK lặp cùng receipt là idempotent; receipt
+  khác hoặc token/part không khớp → 409. Lease hết hạn → phần `unknown`; ACK đến muộn
+  bằng đúng token vẫn chuyển phần đó `sent` và chỉ mở phần kế tiếp.
+- `POST /deliveries/{id}/reconcile` cho job nhiều phần **bắt buộc** `part_id` của
+  đúng phần `unknown` (thiếu → 422, sai → 409) và `sent_message_id` khi `sent`.
+  `not_sent` → phần `failed`, các phần sau bị chặn; không tự requeue.
+- Trạng thái cha: `unknown` > `claimed` > `failed` > `queued` > `sent` > `cancelled`.
+  Mỗi phần giữ receipt riêng; `GET /deliveries` trả `parts[]`.
+- `daban`: bị chặn khi job đang `claimed`/`unknown` (giữ quy tắc cũ). Hủy các phần chưa
+  gửi; nếu bài gốc đã có receipt thì tạo **một** `sold_notice` (position 1000), kể cả
+  với job `single` cũ đã `sent`. Không thu hồi/xóa bài gốc trên Zalo.
+
 ## Backward-compatible schema extensions
 
 - Event adds optional `source_channel`: legacy (default), deplao, mock. Only a
@@ -78,14 +148,19 @@ Backend ghi audit JSON với các trường metadata được chọn cho event, 
   optional transport_mode=mock/deplao/unverified; explicit ACK modes require a
   matching receipt (mock-* or numeric Deplao msgId). Older ACKs remain accepted
   as unverified. Reconciliation records manual provenance and never requeues.
-- SQLite only adds conversations and missing columns; migration is idempotent,
-  preserves old records and does not import partner DBs or create group_posts.
+- SQLite only adds tables/columns: conversations, listing_images, image_events,
+  image_reviews, delivery_parts; listing_deliveries.message_snapshot/snapshot_token;
+  delivery_reconciliations.part_id. Migration is idempotent, preserves old queued
+  and sent rows (tested), and does not import partner DBs or create group_posts.
 - Next.js Zod accepts both old and extended responses. Authentication, same-origin
   mutation checks and server API-key handling are unchanged.
 
-Generated publisher: schedule -> pinned account -> existing claim -> group/ID/token
-checks -> one text send -> real-mode/receipt checks -> existing sent/failure API.
-No extra code-only group post. A thrown send halts Deplao and expires to unknown
+Generated publisher v2 (`private/deplao-publisher-v2.json`): schedule -> pinned
+account -> claim (v2 header) -> group/ID/token/part checks -> `HasPhoto` branch:
+photo parts check the export path against `private/group-media/<32 hex>.jpg` and
+use `zalo.sendImage` (filePath + caption), other parts use one text send -> each
+branch has its own real-mode/receipt check and its own ACK/unknown node, so
+skips never converge. One part per schedule tick. A thrown send halts Deplao and expires to unknown
 after five minutes; there is no verified error edge. No automatic retry or requeue.
 Keep all workflow inputs/logs private. Source verification is not live verification;
 complete the manual checklist before claiming a real group post succeeded.

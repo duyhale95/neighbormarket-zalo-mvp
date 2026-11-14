@@ -1,9 +1,34 @@
 # NeighborMarket AI — Zalo Legit MVP
 
-> **Checkpoint tạm dừng theo yêu cầu người dùng:** đang tích hợp ảnh và publisher
-> nhiều phần từ main; chưa hoàn tất QA media UI/cleanup workflow/review cuối.
-> Xem [trạng thái, kiểm thử và cách chạy checkpoint](docs/MAIN_INTEGRATION_CHECKPOINT.md).
-> Các hướng dẫn text-only bên dưới mô tả bản trước; Zalo thật vẫn chưa xác minh.
+> **Trạng thái (14/11/2026):** đã tích hợp ảnh private, BQL duyệt ảnh, publisher
+> nhiều phần (ảnh bìa → ảnh thêm → mã tin) và thông báo đã bán; kiểm thử bằng dữ
+> liệu tổng hợp, mock transport và trình duyệt. **Zalo thật, Deplao đang cài và
+> moderation OpenAI thật vẫn CHƯA xác minh / chưa gọi.** Xem
+> [trạng thái và kết quả kiểm thử](docs/MAIN_INTEGRATION_CHECKPOINT.md).
+
+### Đã làm và đã kiểm thử, so với chưa xác minh
+
+| Hạng mục | Trạng thái |
+| --- | --- |
+| Hội thoại nháp → xác nhận → BQL duyệt/từ chối → tìm kiếm → đã bán | Đã cài, test tự động |
+| Ảnh: chuẩn hóa, lưu private, BQL xem/tải/kiểm tra lại, token phiên bản, bằng chứng thủ công | Đã cài, test backend + HTTP BFF + Edge |
+| Publisher `photos_v2`, receipt từng phần, đối soát từng phần, sold notice | Đã cài, **mock** transport |
+| Moderation ảnh OpenAI (`IMAGE_MODERATION_ENABLED`) | Tùy chọn, **chưa từng gọi thật** |
+| Nhận ảnh/PM thật, gửi nhóm thật, receipt Zalo thật | **Chưa xác minh**; live bị khóa bởi [gate Deplao](docs/DEPLAO_COMPATIBILITY.md) |
+| Cài đặt thủ công còn cần | Build Deplao strict, bind Meo Meo, quyền nhóm, tắt workflow cũ ([cleanup](docs/WORKFLOW_CLEANUP.md)) |
+
+Chạy cả hai demo offline (không Zalo, không model trả phí):
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.offline_demo
+.\.venv\Scripts\python.exe -m tools.offline_media_demo
+```
+
+Biến mới (xem `.env.example`): `ZALO_PUBLICATION_MODE=single|photos_v2` (chỉ áp
+dụng cho lần duyệt mới), `IMAGE_MODERATION_ENABLED/_API_KEY/_MODEL`,
+`ZALO_IMAGES_ENABLED` (chỉ có hiệu lực khi manifest private đã xác nhận). Generator
+giờ ghi `private/deplao-intake.json`, `private/deplao-publisher-v2.json`,
+`private/zalo-channel.json` và tùy chọn `private/deplao-image-intake.json`.
 
 ## Partner workflow integration
 
@@ -28,8 +53,9 @@ operator xác minh đúng bản đang chạy; xem [compatibility gate](docs/DEPL
 Không bật workflow cũ để bỏ qua kiểm tra này. Chỉ thử live sau khi kiểm tra
 chính sách, account và nhóm.
 Không chạy partner Bot Platform poller cùng Meo Meo; token đó khác session Deplao.
-Mọi tin vẫn phải được người bán xác nhận và BQL duyệt. Ảnh được hoãn, không có
-tải ảnh hay AI hiểu ảnh trong nhánh này. Xem [attribution MIT](THIRD_PARTY_NOTICES.md).
+Mọi tin vẫn phải được người bán xác nhận và BQL duyệt. Ảnh được lưu private và
+BQL phải xem; không có AI hiểu ảnh hay xác minh hàng thật (moderation chỉ gắn
+cờ nội dung, tùy chọn, mặc định tắt). Xem [attribution MIT](THIRD_PARTY_NOTICES.md).
 
 ## Golden Sunrise frontend & BQL UI
 
@@ -90,4 +116,4 @@ BQL phải tự kiểm tra mọi tin. Cờ kiểm duyệt là heuristic, có th�
 
 ## Giới hạn
 
-Chưa xác minh listener Deplao, ánh xạ metadata, workflow publisher, quyền gửi nhóm hoặc kết quả gửi Zalo thật; chưa có đảm bảo gửi reply PM đúng một lần. Chưa có xác thực cư dân, tài khoản BQL riêng, ảnh, hay hội thoại nhiều lượt. Kết quả gửi không chắc chắn được đánh dấu `unknown` để BQL đối soát, không tự retry. Xem [brief sản phẩm](docs/brief-prd.md) và [Deplao Builder upstream](https://github.com/babyvibe/deplao-builder).
+Chưa xác minh listener Deplao, ánh xạ metadata (text và ảnh), workflow publisher, quyền gửi nhóm hoặc kết quả gửi Zalo thật; chưa có đảm bảo gửi reply PM đúng một lần. Chưa có xác thực cư dân hoặc tài khoản BQL riêng. Không hỗ trợ bổ sung ảnh cho tin đã duyệt (tránh sửa nội dung đã duyệt âm thầm) và không thu hồi bài đã đăng. Kết quả gửi không chắc chắn được đánh dấu `unknown` để BQL đối soát, không tự retry. Xem [brief sản phẩm](docs/brief-prd.md) và [Deplao Builder upstream](https://github.com/babyvibe/deplao-builder).

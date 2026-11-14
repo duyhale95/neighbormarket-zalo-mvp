@@ -190,8 +190,9 @@ Community Monitoring, Resident Risk Alerts and MLOps are visibly marked
 “Đang phát triển”; no incidents, risk scores or model evaluations are invented.
 The backend returns at most 100 recent listings/deliveries; UI filters operate
 within those returned records. Refresh is explicit, not realtime streaming.
-There are no personal BQL accounts, resident verification, price-range search,
-image upload or newly implemented Zalo connector. Backend business contracts
+There were no personal BQL accounts, resident verification, price-range search,
+image upload or newly implemented Zalo connector in that original UI release
+(image review was added later; see below). Backend business contracts
 and marketplace code were unchanged by the original UI implementation.
 
 ## Partner integration extension
@@ -209,6 +210,49 @@ changed. Credentials stay server-side. Latest integration verification: backend
 70/70, frontend 6/6, production HTTP BFF 27/27, TypeScript/lint/format/build pass.
 Browser QA with synthetic data checked 360px/768px/1440px, approval -> queued,
 blocked sensitive content and unknown reconciliation without requeue.
+
+## BQL image review and delivery parts
+
+Added without changing landing, logo, login/session/CSRF or the BFF's auth model:
+
+- `ImageReview` in the review dialog: thumbnails/enlarged preview from
+  `/api/bql/images/{id}` (same-origin, HttpOnly session; the BFF adds the admin key
+  server-side and forces `BQL_COMMUNITY_ID`). Upload (JPEG/PNG/WebP ≤ 4 MiB, 5 max)
+  and recheck only while the listing is draft/pending. Labels: "Chưa bị gắn cờ"
+  (clear — not an authenticity check), "Cần xem nội dung", "Đang kiểm tra",
+  "Kiểm tra lỗi", "Chưa kiểm tra tự động", "Nội dung đã thay đổi".
+- Approval sends `image_review_token`; any upload/recheck refreshes the listing and
+  resets the manual-evidence checkbox. Approve stays disabled while an image is
+  pending, or until the checkbox is ticked for non-clear images.
+- `/bql/deliveries` shows "n/m phần có receipt" with each part's Vietnamese name,
+  status, receipt and evidence label. The reconcile dialog names the unknown part
+  and requires its message ID for a "sent" decision.
+- BFF limits: image upload body 6 MiB, every other mutation 8 KiB; preview must be
+  `image/jpeg` ≤ 4 MiB; image IDs must be 32 hex; extra JSON fields rejected.
+
+### Media verification (this branch, 14 November 2026, Windows 11, Node 24.17, Edge 157)
+
+- `frontend/tests/http_integration.py` now runs **63** checks (27 original + 36
+  media): anonymous preview/upload/recheck denied; preview streams JPEG with
+  no-store/nosniff; cross-community preview/recheck 404; non-hex path not proxied;
+  CSRF on upload/recheck; non-JSON 415; caller cannot set community; 6 MiB+ upload
+  and 8 KiB+ recheck bodies 413; missing/pre-upload/pre-recheck tokens 409; manual
+  evidence required and must be boolean; pending image blocks approval and recheck;
+  approved listing refuses upload/recheck; approval creates cover/additional×2/code
+  parts; multipart reconcile needs the right part and receipt, resumes only the next
+  part, cannot run twice; no response carries the admin key.
+- `frontend/tests/browser_qa.py` (Playwright driving installed Edge, QA-only
+  dependency) — **38/38** at 360×800, 768×1024, 1440×900: thumbnails and enlarged
+  preview load, approve disabled until manual evidence, browser upload, approval,
+  per-part reconcile, deliveries readable, no horizontal page overflow, no request
+  URL containing the admin key, images only from the same origin, no console errors.
+  Screenshots with a "DỮ LIỆU GIẢ LẬP" banner: [docs/qa/](qa/README.md).
+- Fixture images are generated colour squares and the moderator is a colour-keyed
+  stub; no OpenAI call, no Zalo send.
+
+On Windows with `core.autocrlf=true`, `npm run format:check` reports every file
+because the checkout has CRLF; the committed files are LF. Check with
+`npx prettier --check --end-of-line auto .` locally; CI/Linux checkouts are LF.
 
 For a preview on separate ports (after `npm run build`):
 
