@@ -10,7 +10,11 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+import httpx
+
+from backend.ai import ListingExtraction, extract_listing
+from backend.moderation import moderation_flags
 
 
 class Event(BaseModel):
@@ -66,6 +70,9 @@ def create_app(db_path, bridge_key, admin_key):
             );
             CREATE INDEX IF NOT EXISTS listings_scope ON listings(community_id, status);
         ''')
+        columns = {row['name'] for row in db.execute('PRAGMA table_info(listings)')}
+        if 'moderation_flags' not in columns:
+            db.execute("ALTER TABLE listings ADD COLUMN moderation_flags TEXT NOT NULL DEFAULT '[]'")
 
     app = FastAPI(title='NeighborMarket local MVP', version='0.1.0')
 
@@ -105,28 +112,60 @@ def create_app(db_path, bridge_key, admin_key):
     def event(event: Event):
         if event.is_self or event.thread_type != 'private':
             return {'ignored': True, 'reply': ''}
+        identity = (event.community_id, event.sender_id, event.event_id)
+        text = event.text.strip()
+        command, _, body = text.partition(' ')
+        command = normalize(command)
+        body = body.strip()
+        # Check the replay cache before network access, then recheck under the write lock.
+        with database() as db:
+            cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()
+        if cached:
+            return json.loads(cached['response'])
+        extracted = None
+        if command not in ('ban', 'xacnhan', 'daban', 'tim'):
+            try:
+                raw = extract_listing(text)
+                if raw is not None:
+                    extracted = ListingExtraction.model_validate(raw)
+            except (httpx.HTTPError, ValueError, TypeError, ValidationError):
+                extracted = None
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
-            identity = (event.community_id, event.sender_id, event.event_id)
             cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()
             if cached:
                 return json.loads(cached['response'])
-            text = event.text.strip()
-            command, _, body = text.partition(' ')
-            command = normalize(command)
-            body = body.strip()
-            if command == 'ban':
-                parts = [p.strip() for p in body.split('|')]
-                if len(parts) != 3 or not all(parts) or not parts[1].isascii() or not parts[1].isdigit():
-                    raise HTTPException(422, 'Dùng: ban Tên món | Giá nguyên VND | Tình trạng')
-                title, price, condition = parts
-                if len(title) > 250 or len(condition) > 500 or not 0 <= int(price) <= 1_000_000_000:
-                    raise HTTPException(422, 'Tên, tình trạng hoặc giá vượt giới hạn')
-                id = 'NM-' + uuid4().hex[:12].upper()
-                db.execute('INSERT INTO listings(id,community_id,seller_id,title,price_vnd,condition,status) VALUES (?,?,?,?,?,?,?)',
-                           (id, event.community_id, event.sender_id, title, int(price), condition, 'draft'))
-                result = {'listing_id': id, 'status': 'draft',
-                          'reply': f'Bản nháp {id}: {title}, {int(price):,}đ, {condition}. Nhắn xacnhan {id} để gửi BQL duyệt.'}
+            if command == 'ban' or (extracted and extracted.intent == 'sell'):
+                if command == 'ban':
+                    parts = [p.strip() for p in body.split('|')]
+                    if len(parts) != 3 or not all(parts) or not parts[1].isascii() or not parts[1].isdigit():
+                        raise HTTPException(422, 'Dùng: ban Tên món | Giá nguyên VND | Tình trạng')
+                    title, price, condition = parts
+                    price = int(price)
+                    missing = []
+                else:
+                    title = (extracted.title or '').strip()
+                    price = extracted.price_vnd
+                    condition = (extracted.condition or '').strip()
+                    missing = set(extracted.missing_fields)
+                    if not title: missing.add('title')
+                    if price is None: missing.add('price_vnd')
+                    if not condition: missing.add('condition')
+                if missing:
+                    labels = {'title': 'tên sản phẩm', 'price_vnd': 'giá', 'condition': 'tình trạng'}
+                    needed = ', '.join(labels[field] for field in ('title', 'price_vnd', 'condition') if field in missing)
+                    result = {'reply': f'Bạn vui lòng cung cấp {needed}. Hãy gửi lại đầy đủ tên sản phẩm, giá VND và tình trạng.'}
+                else:
+                    if len(title) > 250 or len(condition) > 500 or not 0 <= price <= 1_000_000_000:
+                        raise HTTPException(422, 'Tên, tình trạng hoặc giá vượt giới hạn')
+                    flags = moderation_flags(title, condition)
+                    if extracted and extracted.risk_flags:
+                        flags.append('ai_suspicious')
+                    id = 'NM-' + uuid4().hex[:12].upper()
+                    db.execute('INSERT INTO listings(id,community_id,seller_id,title,price_vnd,condition,status,moderation_flags) VALUES (?,?,?,?,?,?,?,?)',
+                               (id, event.community_id, event.sender_id, title, price, condition, 'draft', json.dumps(flags)))
+                    result = {'listing_id': id, 'status': 'draft',
+                              'reply': f'Bản nháp {id}: {title}, {price:,}đ, {condition}. Nhắn xacnhan {id} để gửi BQL duyệt.'}
             elif command in ('xacnhan', 'daban'):
                 row = db.execute('SELECT * FROM listings WHERE id=? AND community_id=? AND seller_id=?',
                                  (body, event.community_id, event.sender_id)).fetchone()
@@ -146,7 +185,7 @@ def create_app(db_path, bridge_key, admin_key):
                 found = [dict(r) for r in rows if all(term in normalize(r['title'] + ' ' + r['condition']) for term in terms)][:5]
                 result = {'listings': found, 'reply': '\n'.join(f"{r['id']} — {r['title']} — {r['price_vnd']:,}đ" for r in found) or 'Chưa có tin phù hợp đã được duyệt.'}
             else:
-                result = {'reply': 'Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh hoặc AI tự do.'}
+                result = {'reply': 'Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh.'}
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
             return result
 
