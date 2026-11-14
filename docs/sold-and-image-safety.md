@@ -56,3 +56,6 @@ Chỉ thêm/kiểm tra lại ảnh trước khi tin approved. Không cho thay �
 
 ## Sửa kết nối CDN thực tế
 Đã quan sát ảnh đến qua photo-stal-30.zdn.vn và photo-stal-7.zdn.vn trong log Deplao. Bổ sung đúng family photo-stal-[0-9]{1,3}.zdn.vn, vẫn giữ IP pin/TLS/no redirects/giới hạn tải. Đã fetch và chuẩn hóa JPEG thành công từ URL ảnh thật; chưa replay để tự gửi kết quả Zalo, người dùng cần gửi lại ảnh.
+
+## Retry CDN khi ảnh vừa gửi chưa sẵn sàng
+Một lần gọi thực tế trả non-200, cùng URL tải lại sau đó trả200. Thêm tối đa3attempt cho403/404/408/429/5xx trong deadline8giây, không followredirect, log chỉ HTTPstatus/host.47tests pass. Đã replay an toàn event ảnh lỗi sau khi xác minh người gửi chưa đổi bản nháp: ảnh lưu thành công, moderation clear; không tự gửi lại tin nhắn Zalo.

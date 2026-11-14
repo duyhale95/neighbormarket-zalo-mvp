@@ -73,6 +73,15 @@ class ImageTests(unittest.TestCase):
         for host in ['evil.zdn.vn','photo-stal-7.zdn.vn.evil.com','photo-stal-7x.zdn.vn']:
             with self.assertRaises(ValueError):validate_zalo_url('https://'+host+'/image.jpg')
 
+    def test_zalo_cdn_temporary_error_retries_without_redirecting(self):
+        from backend.images import _fetch_zalo, ImageHTTPError
+        with patch('backend.images._fetch_zalo_once',side_effect=[ImageHTTPError(404),photo()]) as fetch, patch('backend.images.time.sleep'):
+            self.assertEqual(_fetch_zalo('https://photo-stal-30.zdn.vn/x'),photo())
+            self.assertEqual(fetch.call_count,2)
+        with patch('backend.images._fetch_zalo_once',side_effect=ImageHTTPError(302)) as fetch:
+            with self.assertRaises(ValueError):_fetch_zalo('https://photo-stal-30.zdn.vn/x')
+            self.assertEqual(fetch.call_count,1)
+
     def test_provider_uses_moderation_not_chat(self):
         def handle(req):
             self.assertEqual(str(req.url),'https://api.openai.com/v1/moderations')

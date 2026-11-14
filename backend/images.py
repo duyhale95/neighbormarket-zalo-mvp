@@ -6,6 +6,7 @@ import http.client
 import io
 import ipaddress
 import json
+import logging
 import re
 import socket
 import ssl
@@ -58,7 +59,13 @@ def validate_zalo_url(url):
         raise ValueError('Chưa nhận diện được địa chỉ ảnh Zalo này. Bạn gửi lại ảnh trực tiếp hoặc tải ảnh lên dashboard nhé.') from None
 
 
-def _fetch_zalo(url):
+class ImageHTTPError(ValueError):
+    def __init__(self, status):
+        self.status = status
+        super().__init__(f'Máy chủ ảnh Zalo chưa cung cấp ảnh (HTTP {status}). Bạn đợi vài giây rồi gửi lại ảnh nhé.')
+
+
+def _fetch_zalo_once(url):
     p = validate_zalo_url(url)
     addresses = {entry[4][0] for entry in socket.getaddrinfo(p.hostname, 443, type=socket.SOCK_STREAM)}
     if not addresses or not all(ipaddress.ip_address(a).is_global and not ipaddress.ip_address(a).is_multicast for a in addresses):
@@ -71,13 +78,25 @@ def _fetch_zalo(url):
         connection.request('GET', p.path + ('?' + p.query if p.query else ''), headers={'User-Agent':'NeighborMarket-local-image'})
         response = connection.getresponse()
         if response.status != 200:  # No redirects to unvalidated destinations.
-            raise ValueError('Không tải được ảnh trực tiếp. Hãy gửi ảnh lại hoặc tải lên dashboard.')
+            raise ImageHTTPError(response.status)
         raw = response.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             raise ValueError('Ảnh tối đa 4 MiB.')
         return raw
     finally:
         connection.close()
+
+
+def _fetch_zalo(url):
+    validate_zalo_url(url)
+    for attempt in range(3):
+        try:
+            return _fetch_zalo_once(url)
+        except ImageHTTPError as error:
+            logging.getLogger(__name__).warning('Zalo image CDN HTTP %s, attempt %s/3, host=%s',error.status,attempt+1,urlsplit(url).hostname)
+            if error.status not in (403,404,408,429,500,502,503,504) or attempt==2:
+                raise
+            time.sleep((.4,1.2)[attempt])
 
 
 def fetch_zalo(url):
