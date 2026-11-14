@@ -1,0 +1,234 @@
+{
+  "_deplaoWorkflow": true,
+  "_version": 1,
+  "channel": "zalo",
+  "name": "Meo Meo - Publish Approved with Photos v2",
+  "description": "Select Meo Meo; disable previous GROUP publisher, keep private chat and image intake workflows. v2 sends stored product photos with caption, then extra photos and copyable code. Local file paths require same machine. Contains local key: never share.",
+  "nodes": [
+    {
+      "id": "schedule",
+      "type": "trigger.schedule",
+      "label": "Every20Seconds",
+      "position": {
+        "x": 480,
+        "y": 40
+      },
+      "config": {
+        "cronExpression": "*/20 * * * * *",
+        "timezone": "Asia/Ho_Chi_Minh"
+      }
+    },
+    {
+      "id": "claim",
+      "type": "output.httpRequest",
+      "label": "Claim",
+      "position": {
+        "x": 480,
+        "y": 220
+      },
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/group-publications/claim",
+        "headers": "{\"X-API-Key\": \"YOUR_BRIDGE_KEY\", \"Content-Type\": \"application/json\", \"X-Publisher-Version\": \"2\"}",
+        "timeout": 10000
+      }
+    },
+    {
+      "id": "httpok",
+      "type": "logic.if",
+      "label": "ClaimOK",
+      "position": {
+        "x": 480,
+        "y": 400
+      },
+      "config": {
+        "left": "{{ $node.Claim.status }}",
+        "operator": "equals",
+        "right": "200"
+      }
+    },
+    {
+      "id": "ready",
+      "type": "logic.if",
+      "label": "HasJob",
+      "position": {
+        "x": 480,
+        "y": 580
+      },
+      "config": {
+        "left": "{{ $node.Claim.data.ready }}",
+        "operator": "equals",
+        "right": "true"
+      }
+    },
+    {
+      "id": "send",
+      "type": "zalo.sendMessage",
+      "label": "PostToGroup",
+      "position": {
+        "x": 160,
+        "y": 960
+      },
+      "config": {
+        "threadId": "{{ $node.Claim.data.group_id }}",
+        "threadType": "1",
+        "message": "{{ $node.Claim.data.message }}",
+        "continueOnError": false,
+        "sendDelayMinSeconds": 1,
+        "sendDelayMaxSeconds": 2
+      }
+    },
+    {
+      "id": "receipt",
+      "type": "logic.if",
+      "label": "HasReceipt",
+      "position": {
+        "x": 160,
+        "y": 1140
+      },
+      "config": {
+        "left": "{{ $node.PostToGroup.msgId }}",
+        "operator": "not_empty",
+        "right": ""
+      }
+    },
+    {
+      "id": "ack",
+      "type": "output.httpRequest",
+      "label": "SaveReceipt",
+      "position": {
+        "x": 160,
+        "y": 1320
+      },
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/group-publications/{{ $node.Claim.data.job_id }}/ack",
+        "headers": "{\"X-API-Key\": \"YOUR_BRIDGE_KEY\", \"Content-Type\": \"application/json\", \"X-Publisher-Version\": \"2\"}",
+        "timeout": 10000,
+        "body": "{\"token\":\"{{ $node.Claim.data.token }}\",\"message_id\":\"{{ $node.PostToGroup.msgId }}\"}"
+      }
+    },
+    {
+      "id": "media",
+      "type": "logic.if",
+      "label": "HasPhoto",
+      "position": {
+        "x": 480,
+        "y": 760
+      },
+      "config": {
+        "left": "{{ $node.Claim.data.has_image }}",
+        "operator": "equals",
+        "right": "true"
+      }
+    },
+    {
+      "id": "photo",
+      "type": "zalo.sendImage",
+      "label": "PostPhoto",
+      "position": {
+        "x": 800,
+        "y": 960
+      },
+      "config": {
+        "threadId": "{{ $node.Claim.data.group_id }}",
+        "threadType": "1",
+        "filePath": "{{ $node.Claim.data.image_path }}",
+        "message": "{{ $node.Claim.data.message }}",
+        "continueOnError": false
+      }
+    },
+    {
+      "id": "photoReceipt",
+      "type": "logic.if",
+      "label": "HasPhotoReceipt",
+      "position": {
+        "x": 800,
+        "y": 1140
+      },
+      "config": {
+        "left": "{{ $node.PostPhoto.msgId }}",
+        "operator": "not_empty",
+        "right": ""
+      }
+    },
+    {
+      "id": "photoAck",
+      "type": "output.httpRequest",
+      "label": "SavePhotoReceipt",
+      "position": {
+        "x": 800,
+        "y": 1320
+      },
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/group-publications/{{ $node.Claim.data.job_id }}/ack",
+        "headers": "{\"X-API-Key\": \"YOUR_BRIDGE_KEY\", \"Content-Type\": \"application/json\", \"X-Publisher-Version\": \"2\"}",
+        "timeout": 10000,
+        "body": "{\"token\":\"{{ $node.Claim.data.token }}\",\"message_id\":\"{{ $node.PostPhoto.msgId }}\"}"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e0",
+      "source": "schedule",
+      "target": "claim",
+      "sourceHandle": "default"
+    },
+    {
+      "id": "e1",
+      "source": "claim",
+      "target": "httpok",
+      "sourceHandle": "default"
+    },
+    {
+      "id": "e2",
+      "source": "httpok",
+      "target": "ready",
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e3",
+      "source": "ready",
+      "target": "media",
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e4",
+      "source": "media",
+      "target": "send",
+      "sourceHandle": "false"
+    },
+    {
+      "id": "e5",
+      "source": "send",
+      "target": "receipt",
+      "sourceHandle": "default"
+    },
+    {
+      "id": "e6",
+      "source": "receipt",
+      "target": "ack",
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e7",
+      "source": "media",
+      "target": "photo",
+      "sourceHandle": "true"
+    },
+    {
+      "id": "e8",
+      "source": "photo",
+      "target": "photoReceipt",
+      "sourceHandle": "default"
+    },
+    {
+      "id": "e9",
+      "source": "photoReceipt",
+      "target": "photoAck",
+      "sourceHandle": "true"
+    }
+  ]
+}

@@ -1,7 +1,6 @@
 .env
 .env.*
 !.env.example
-private/
 *session*
 *cookie*
 node_modules/
@@ -11,3 +10,10 @@ __pycache__/
 *.db-wal
 *.db-shm
 .superpowers/
+
+# Only sanitized workflow templates are tracked.
+/private/*
+!/private/workflows/
+/private/workflows/*
+!/private/workflows/*.json
+!/private/workflows/README.md

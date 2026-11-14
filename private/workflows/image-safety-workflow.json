@@ -1,0 +1,96 @@
+{
+  "_deplaoWorkflow": true,
+  "_version": 1,
+  "channel": "zalo",
+  "name": "Meo Meo - Image Safety Intake TEST",
+  "description": "Private photo safety intake. Select Meo Meo. Text draft first, photo before confirmation. Uses first image only. Contains local secret.",
+  "nodes": [
+    {
+      "id": "receive",
+      "type": "trigger.message",
+      "label": "ReceivePrivate",
+      "position": {
+        "x": 320,
+        "y": 40
+      },
+      "config": {
+        "threadType": "0",
+        "fromId": "YOUR_TEST_SENDER_ID",
+        "senderRole": "all",
+        "ignoreOwn": true,
+        "onlyOwn": false,
+        "keyword": "",
+        "messageTypes": [
+          "image"
+        ],
+        "debounceSeconds": 0
+      }
+    },
+    {
+      "id": "backend",
+      "type": "output.httpRequest",
+      "label": "MarketBackend",
+      "position": {
+        "x": 320,
+        "y": 230
+      },
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/bridge/zalo-image",
+        "timeout": 30000,
+        "headers": "{\"X-API-Key\": \"YOUR_BRIDGE_KEY\", \"X-Sender-Id\": \"{{ $trigger.fromId }}\", \"X-Event-Id\": \"{{ $trigger.msgId }}\", \"Content-Type\": \"text/plain; charset=utf-8\"}",
+        "body": "NM-IMAGE:\n{{ $trigger.images.0 }}"
+      }
+    },
+    {
+      "id": "ok",
+      "type": "logic.if",
+      "label": "BackendOK",
+      "position": {
+        "x": 320,
+        "y": 430
+      },
+      "config": {
+        "left": "{{ $node.MarketBackend.status }}",
+        "operator": "equals",
+        "right": "200"
+      }
+    },
+    {
+      "id": "send",
+      "type": "zalo.sendMessage",
+      "label": "ReplyToSender",
+      "position": {
+        "x": 320,
+        "y": 630
+      },
+      "config": {
+        "threadId": "{{ $trigger.threadId }}",
+        "threadType": "0",
+        "message": "{{ $node.MarketBackend.data.reply }}",
+        "sendDelayMinSeconds": 1,
+        "sendDelayMaxSeconds": 2
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "receive",
+      "sourceHandle": "default",
+      "target": "backend"
+    },
+    {
+      "id": "e2",
+      "source": "backend",
+      "sourceHandle": "default",
+      "target": "ok"
+    },
+    {
+      "id": "e3",
+      "source": "ok",
+      "sourceHandle": "true",
+      "target": "send"
+    }
+  ]
+}
