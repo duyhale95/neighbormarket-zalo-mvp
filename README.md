@@ -2,6 +2,10 @@
 
 Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua dashboard.
 
+## Mới: thông báo đã bán và kiểm duyệt an toàn ảnh
+
+Chủ tin báo đã bán sẽ ngừng xuất hiện trong tìm kiếm và đưa thông báo ĐÃ BÁN vào nhóm qua publisher hiện có (không thu hồi bài cũ). Có workflow nhận ảnh riêng, upload ảnh local, OpenAI safety moderation và hàng đợi BQL xem ảnh có cờ. Xem [hướng dẫn cấu hình và nghiệm thu](docs/sold-and-image-safety.md). Ảnh cần gửi sau text tạo nháp, trước xác nhận.
+
 ## Mới: đưa tin đã duyệt lên nhóm demo
 
 Có outbox và workflow lịch Deplao đăng bài + mã món đồ riêng; dashboard hiển thị trạng thái đăng. Người mua có thể gửi riêng mã cho bot để xem tin còn bán. Xem [hướng dẫn bật đăng nhóm](docs/group-publishing.md). Cần import/bật workflow publisher mới trong Deplao; chỉ chạy backend không tự gửi nhóm.

@@ -29,6 +29,8 @@ class Review(BaseModel):
     community_id: str = Field(min_length=1, max_length=100)
     action: Literal['approve', 'reject']
     reason: str = Field(min_length=1, max_length=1000)
+    image_reviewed: bool = False
+    image_review_token: str | None = Field(default=None, max_length=128)
 
 
 def normalize(value):
@@ -37,6 +39,9 @@ def normalize(value):
 
 
 def parse_command(text):
+    sold = re.fullmatch(r'da\s*ban(?:\s+(nm-[a-z0-9]+))?', ' '.join(normalize(text).split()))
+    if sold:
+        return 'daban', (sold.group(1) or '').upper()
     code = re.fullmatch(r'(?:xem\s+)?(nm-[a-z0-9]+)', ' '.join(normalize(text).split()))
     if code:
         return 'xem', code.group(1).upper()
@@ -47,7 +52,7 @@ def parse_command(text):
     return normalize(command), body.strip()
 
 
-def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None):
+def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None, moderator=None):
     if not bridge_key or not admin_key or bridge_key == admin_key:
         raise ValueError('Configure two different nonempty API keys')
     db_path = Path(db_path)
@@ -99,6 +104,8 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
     intake = NaturalIntake(database, extractor) if extractor else None
     from backend.publishing import GroupPublisher
     publisher = GroupPublisher(database, group_target)
+    from backend.images import ImageStore
+    images = ImageStore(database, moderator)
 
     def authenticate(expected):
         def check(x_api_key: str = Header(default='')):
@@ -107,6 +114,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
         return check
 
     publisher.install(app, authenticate, bridge_key, admin_key)
+    images.install(app, authenticate, bridge_key, admin_key)
 
     @app.get('/health')
     def health():
@@ -119,7 +127,9 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
     @app.get('/listings', dependencies=[Depends(authenticate(admin_key))])
     def listings(community_id: str = Query(min_length=1, max_length=100)):
         with database() as db:
-            return [publisher.decorate(db, row) for row in db.execute(
+            # Bind displayed fields/images and the approval token to one snapshot.
+            db.execute('BEGIN')
+            return [{**publisher.decorate(db, row), 'images': images.metadata(db, row['id']), 'image_review_token': images.review_token(db,row['id'])} for row in db.execute(
                 'SELECT * FROM listings WHERE community_id=? ORDER BY rowid DESC LIMIT 100', (community_id,))]
 
     @app.post('/listings/{listing_id}/review', dependencies=[Depends(authenticate(admin_key))])
@@ -133,6 +143,8 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
             if row['status'] != 'pending':
                 raise HTTPException(409, 'Only pending listings may be reviewed')
             status = 'approved' if request.action == 'approve' else 'rejected'
+            if status == 'approved':
+                images.guard(db, listing_id, request.image_reviewed, request.reason, request.image_review_token)
             db.execute('UPDATE listings SET status=? WHERE id=?', (status, listing_id))
             db.execute('INSERT INTO reviews(listing_id,action,reason) VALUES (?,?,?)',
                        (listing_id, request.action, request.reason))
@@ -191,6 +203,14 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
                 result = {'listing_id': id, 'status': 'draft',
                           'reply': f'Bản nháp:\n{title}\nGiá: {int(price):,}đ\nTình trạng: {condition}\nMã tin:\n{id}\nNhắn xác nhận để gửi BQL duyệt.'}
             elif command in ('xacnhan', 'daban'):
+                if command == 'daban' and not body:
+                    choices = list(db.execute("SELECT id,title FROM listings WHERE community_id=? AND seller_id=? AND status='approved' ORDER BY rowid DESC",
+                                              (event.community_id, event.sender_id)))
+                    if len(choices) != 1:
+                        result = {'reply': ('Bạn muốn đánh dấu món nào đã bán? Nhắn daban MÃ_TIN:\n' + '\n'.join(f"{x['id']} — {x['title']}" for x in choices[:10])) if choices else 'Bạn chưa có tin đang bán để đánh dấu.'}
+                        db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
+                        return result
+                    body = choices[0]['id']
                 if command == 'xacnhan' and not body:
                     current = db.execute('SELECT listing_id FROM conversations WHERE community_id=? AND sender_id=?',
                                          (event.community_id, event.sender_id)).fetchone()
@@ -212,6 +232,8 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
                 if row['status'] != required:
                     raise HTTPException(409, 'Listing is not in the required state')
                 db.execute('UPDATE listings SET status=? WHERE id=?', (status, body))
+                if status == 'sold':
+                    publisher.enqueue_sold(db, {**dict(row), 'status': status})
                 if command == 'xacnhan':
                     db.execute('DELETE FROM conversations WHERE community_id=? AND sender_id=? AND listing_id=?',
                                (event.community_id, event.sender_id, body))
@@ -278,5 +300,7 @@ def from_environment():
     group_id = os.getenv('ZALO_GROUP_ID')
     target = {'group_id': group_id, 'group_name': os.getenv('ZALO_GROUP_NAME', 'Nhóm demo'),
               'community_id': os.getenv('DEMO_COMMUNITY_ID', 'demo')} if group_id else None
+    from backend.images import OpenAIModerator
     return create_app(os.getenv('DATABASE_PATH', 'private/market.db'),
-                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'], extractor=extractor, group_target=target)
+                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'], extractor=extractor, group_target=target,
+                      moderator=OpenAIModerator(os.getenv('OPENAI_API_KEY')))

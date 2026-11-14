@@ -36,6 +36,14 @@ if ($GeminiKeyFile) {
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($keyPointer) }
 }
 Write-Host ('Natural text AI configured: ' + [bool]($env:GEMINI_API_KEY -and $env:GEMINI_MODEL))
+$moderationPath = Join-Path $PSScriptRoot 'private/moderation-key.xml'
+if (Test-Path -LiteralPath $moderationPath) {
+    $secureModerationKey = Import-Clixml -LiteralPath $moderationPath
+    $moderationPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureModerationKey)
+    try { $env:OPENAI_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($moderationPointer) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($moderationPointer) }
+}
+Write-Host ('Image safety moderation configured: ' + [bool]$env:OPENAI_API_KEY)
 Write-Host 'API: http://127.0.0.1:8000/docs'
 Write-Host 'Dashboard: http://127.0.0.1:8000/admin'
 Write-Host 'Local demo keys are in private/local-config.json. Do not upload this file.'
@@ -44,4 +52,7 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
     throw 'Create .venv and install requirements first; see README.'
 }
 try { & $pythonPath -m uvicorn backend.app:from_environment --factory --host 127.0.0.1 --port 8000 }
-finally { if ($GeminiKeyFile) { Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue } }
+finally {
+    if ($GeminiKeyFile) { Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $moderationPath) { Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue }
+}

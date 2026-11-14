@@ -65,7 +65,8 @@ class GroupPublisher:
         configured = self.target and row['community_id'] == self.target['community_id']
         jobs = list(db.execute('SELECT part,status FROM group_posts WHERE listing_id=? AND group_id=?',
                               (row['id'], self.target['group_id']))) if configured else []
-        states = [r['status'] for r in jobs]
+        states = [r['status'] for r in jobs if r['part'] != 'sold']
+        sold_states = [r['status'] for r in jobs if r['part'] == 'sold']
         if not configured: status = 'not_configured'
         elif not states: status = 'not_queued'
         elif 'uncertain' in states: status = 'uncertain'
@@ -74,9 +75,21 @@ class GroupPublisher:
         elif 'cancelled' in states: status = 'cancelled'
         else: status = 'queued'
         result.update(publication_status=status, publication_group=self.target['group_name'] if configured else None)
+        result['sold_publication_status'] = sold_states[0] if sold_states else 'not_needed'
         if row['status'] == 'approved':
             result['publication_preview'] = format_post(row)
         return result
+
+    def enqueue_sold(self, db, listing):
+        if not self.target or listing['community_id'] != self.target['community_id']:
+            return
+        prior = db.execute("SELECT 1 FROM group_posts WHERE listing_id=? AND group_id=? AND part='post' AND status IN ('posted','sending','uncertain')",
+                           (listing['id'], self.target['group_id'])).fetchone()
+        db.execute("UPDATE group_posts SET status='cancelled' WHERE listing_id=? AND status='queued' AND part IN ('post','code')", (listing['id'],))
+        if prior:
+            db.execute('INSERT OR IGNORE INTO group_posts(id,listing_id,community_id,group_id,group_name,part,status) VALUES (?,?,?,?,?,?,?)',
+                       (uuid4().hex, listing['id'], listing['community_id'], self.target['group_id'], self.target['group_name'], 'sold', 'queued'))
+        return bool(prior)
 
     def install(self, app, authenticate, bridge_key, admin_key):
         @app.post('/group-publications/claim', dependencies=[Depends(authenticate(bridge_key))])
@@ -87,14 +100,16 @@ class GroupPublisher:
                 db.execute('BEGIN IMMEDIATE')
                 now = time.time()
                 db.execute("UPDATE group_posts SET status='uncertain' WHERE status='sending' AND lease_until<=?", (now,))
-                db.execute("UPDATE group_posts SET status='cancelled' WHERE status='queued' AND listing_id IN "
-                           "(SELECT id FROM listings WHERE status!='approved')")
+                db.execute("UPDATE group_posts SET status='cancelled' WHERE status='queued' AND "
+                           "((part!='sold' AND listing_id IN (SELECT id FROM listings WHERE status!='approved')) OR "
+                           "(part='sold' AND listing_id IN (SELECT id FROM listings WHERE status!='sold')))")
                 group_id = self.target['group_id']
                 if db.execute("SELECT 1 FROM group_posts WHERE group_id=? AND status='sending' LIMIT 1", (group_id,)).fetchone():
                     return {'ready': False}
                 job = db.execute("SELECT p.* FROM group_posts p JOIN listings l ON l.id=p.listing_id "
-                                 "WHERE p.group_id=? AND p.community_id=? AND p.status='queued' AND l.status='approved' "
-                                 "AND (p.part='post' OR EXISTS (SELECT 1 FROM group_posts prior WHERE prior.listing_id=p.listing_id "
+                                 "WHERE p.group_id=? AND p.community_id=? AND p.status='queued' "
+                                 "AND ((p.part='sold' AND l.status='sold') OR (p.part!='sold' AND l.status='approved')) "
+                                 "AND (p.part IN ('post','sold') OR EXISTS (SELECT 1 FROM group_posts prior WHERE prior.listing_id=p.listing_id "
                                  "AND prior.group_id=p.group_id AND prior.part='post' AND prior.status='posted')) "
                                  "ORDER BY p.rowid LIMIT 1", (group_id, self.target['community_id'])).fetchone()
                 if not job:
@@ -104,7 +119,8 @@ class GroupPublisher:
                 db.execute("UPDATE group_posts SET status='sending',token=?,lease_until=? WHERE id=?", (token, now+180, job['id']))
                 return {'ready': True, 'job_id': job['id'], 'token': token, 'part': job['part'],
                         'group_id': group_id, 'group_name': job['group_name'], 'listing_id': row['id'],
-                        'message': format_post(row) if job['part'] == 'post' else row['id']}
+                        'message': (f"✅ ĐÃ BÁN\n{public_text(row['title'])}\nMã món đồ:\n{row['id']}\nMón này đã ngừng xuất hiện trong tìm kiếm."
+                                    if job['part'] == 'sold' else format_post(row) if job['part'] == 'post' else row['id'])}
 
         @app.post('/group-publications/{job_id}/ack', dependencies=[Depends(authenticate(bridge_key))])
         def ack(job_id: str, request: Receipt):
@@ -132,12 +148,17 @@ class GroupPublisher:
                 row = db.execute('SELECT * FROM listings WHERE id=? AND community_id=?', (listing_id, request.community_id)).fetchone()
                 if not row:
                     raise HTTPException(404, 'Listing not found')
-                if row['status'] != 'approved':
+                if row['status'] not in ('approved', 'sold'):
                     raise HTTPException(409, 'Tin chưa được duyệt hoặc không còn bán.')
                 if not self.target or request.community_id != self.target['community_id']:
                     raise HTTPException(409, 'Chưa cấu hình nhóm cho khu này.')
-                self.enqueue(db, row)
+                if row['status'] == 'sold':
+                    if not self.enqueue_sold(db, row):
+                        raise HTTPException(409, 'Tin chưa từng được đăng nhóm; không cần thông báo đã bán.')
+                else:
+                    self.enqueue(db, row)
                 if request.retry_uncertain:
-                    db.execute("UPDATE group_posts SET status='queued',token=NULL,lease_until=NULL WHERE listing_id=? AND group_id=? AND status='uncertain'",
-                               (listing_id, self.target['group_id']))
+                    db.execute("UPDATE group_posts SET status='queued',token=NULL,lease_until=NULL WHERE listing_id=? AND group_id=? AND status='uncertain' "
+                               "AND ((?='sold' AND part='sold') OR (?='approved' AND part!='sold'))",
+                               (listing_id, self.target['group_id'], row['status'], row['status']))
                 return self.decorate(db, row)

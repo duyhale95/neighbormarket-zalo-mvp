@@ -95,3 +95,20 @@ class GroupTests(unittest.TestCase):
         self.assertNotIn('0912345678',item['condition'])
         self.send('daban '+id)
         self.assertEqual(self.send('xem '+id).json()['listings'],[])
+
+    def test_sold_posted_item_queues_one_group_notification(self):
+        id=self.listing();self.send('xác nhận');self.approve(id)
+        self.ack(self.claim());self.ack(self.claim())
+        self.send('daban '+id)
+        job=self.claim();self.assertTrue(job['ready']);self.assertEqual(job['part'],'sold')
+        self.assertIn('ĐÃ BÁN',job['message']);self.assertIn(id,job['message'])
+        self.ack(job);self.assertFalse(self.claim()['ready'])
+        self.assertEqual(self.send('daban '+id).status_code,409)
+
+    def test_bare_sold_asks_when_more_than_one_item(self):
+        first=self.listing();self.send('xác nhận');self.approve(first)
+        second=self.listing();self.send('xác nhận');self.approve(second)
+        r=self.send('đã bán').json()
+        self.assertIn(first,r['reply']);self.assertIn(second,r['reply'])
+        rows=self.client.get('/listings?community_id=demo',headers=self.admin).json()
+        self.assertTrue(all(x['status']=='approved' for x in rows))
