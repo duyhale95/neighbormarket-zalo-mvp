@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NeighborMarket — Bàn duyệt tin</title>
+<style>
+:root{font:16px/1.5 'Segoe UI',sans-serif;color:#173042;background:#f2f5f7}*{box-sizing:border-box}body{margin:0}header{background:#16624f;color:white;padding:25px max(24px,calc((100vw - 1120px)/2))}header h1{margin:0;font-size:28px}header p{margin:6px 0 0}main{max-width:1168px;margin:auto;padding:24px}section{background:white;padding:22px;border:1px solid #dbe4e9;border-radius:12px;margin-bottom:20px}h2{margin:0 0 16px;font-size:20px}.row{display:flex;align-items:end;gap:14px;flex-wrap:wrap}label{display:block;font-weight:600;font-size:14px}input,select,textarea,button{font:inherit;border-radius:6px;padding:10px 12px;border:1px solid #91a5b2}input,textarea{width:100%;margin-top:5px}input[type=password]{min-width:240px}textarea{min-height:100px;resize:vertical}button{background:#16624f;color:white;cursor:pointer}button.secondary{background:white;color:#173042}button.reject{background:#9a3737}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:3px solid #d79927;outline-offset:3px}.hint{color:#586d7b;font-size:14px}#notice{white-space:pre-wrap;min-height:24px}#list{display:grid;gap:14px}.listing{border:1px solid #dbe4e9;border-left:5px solid #16624f;padding:18px;border-radius:6px}.listing h3{margin:0 0 8px}.listing p{margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere}.status{display:inline-block;border-radius:4px;background:#edf2f6;padding:3px 8px;font-size:13px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.listing textarea{margin:10px 0 0}.price{font-size:22px;font-weight:700}code{background:#edf2f6;padding:2px 4px;overflow-wrap:anywhere}@media(max-width:600px){main{padding:12px}section{padding:16px}.row>*{width:100%}header{padding:22px}header h1{font-size:24px}input[type=password]{min-width:0}}
+</style>
+<header><h1>NeighborMarket</h1><p>Bàn duyệt tin cư dân · Bản thử trên máy này</p></header>
+<main>
+<section><h2>Mở bảng quản trị</h2><form id="access" class="row">
+<label>Khóa quản trị local<input id="key" type="password" autocomplete="off" required></label>
+<label>Khu thử nghiệm<input id="community" value="demo" required maxlength="100"></label>
+<label>Trạng thái<select id="filter"><option value="all">Tất cả</option><option value="pending">Chờ duyệt</option><option value="draft">Bản nháp</option><option value="approved">Đang bán</option><option value="rejected">Từ chối</option><option value="sold">Đã bán</option></select></label>
+<button>Tải danh sách</button><button type="button" class="secondary" id="lock">Khóa bảng</button></form>
+<p class="hint">Dùng admin_key trong private/local-config.json. Khóa chỉ giữ trong bộ nhớ trang, chưa phải đăng nhập BQL theo từng người.</p>
+<p id="notice" role="status" aria-live="polite">Nhập khóa quản trị để xem tin.</p></section>
+<section><h2 id="heading">Danh sách tin</h2><div id="list">Chưa tải dữ liệu.</div></section>
+<section><h2>Thử một vòng nghiệp vụ</h2><p>Nhắn các lệnh này qua workflow backend sau khi nhập cấu hình Deplao:</p>
+<p><code>ban Ghế làm việc | 500000 | Đã dùng 6 tháng</code></p><p><code>xacnhan MÃ_TIN</code> → duyệt tại bảng này → <code>tim ghế</code> → <code>daban MÃ_TIN</code></p>
+<p class="hint">Giao diện này chưa có đọc ảnh hoặc hội thoại AI. Tin đã duyệt được sao chép để BQL đăng nhóm thủ công.</p></section>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id),state={key:'',community:'',rows:[],version:0};
+const names={draft:'Bản nháp',pending:'Chờ duyệt',approved:'Đang bán',rejected:'Từ chối',sold:'Đã bán'};
+const make=(tag,text,cls)=>{const el=document.createElement(tag);el.textContent=text;if(cls)el.className=cls;return el};
+async function api(path,options={}){const r=await fetch(path,{...options,headers:{'X-API-Key':state.key,'Content-Type':'application/json'},cache:'no-store'});if(!r.ok)throw Error(r.status===401?'Khóa quản trị không đúng.':r.status===409?'Tin đã thay đổi trạng thái. Hãy tải lại.':`Không thực hiện được (${r.status}).`);return r.json()}
+function render(){const list=$('list');list.replaceChildren();const rows=state.rows.filter(r=>$('filter').value==='all'||r.status===$('filter').value);$('heading').textContent=`Danh sách tin (${rows.length} trong 100 tin gần nhất)`;if(!rows.length){list.append(make('p','Chưa có tin ở trạng thái này. Người bán cần xác nhận bản nháp để gửi duyệt.'));return}
+for(const r of rows){const card=make('article','','listing');card.append(make('span',names[r.status]||r.status,'status'),make('h3',r.title),make('p',new Intl.NumberFormat('vi-VN').format(r.price_vnd)+' đ','price'),make('p',r.condition),make('p',r.id,'hint'));
+if(r.status==='pending'){const reason=document.createElement('textarea');reason.placeholder='Nhập lý do duyệt hoặc từ chối';reason.setAttribute('aria-label','Lý do xử lý '+r.id);reason.maxLength=1000;card.append(reason);const actions=make('div','','actions');for(const [action,label,cls] of [['approve','Duyệt tin',''],['reject','Từ chối','reject']]){const b=make('button',label,cls);b.onclick=async()=>{const version=state.version;if(!reason.value.trim()){reason.focus();$('notice').textContent='Cần nhập lý do xử lý.';return}actions.querySelectorAll('button').forEach(x=>x.disabled=true);try{await api('/listings/'+encodeURIComponent(r.id)+'/review',{method:'POST',body:JSON.stringify({community_id:state.community,action,reason:reason.value.trim()})});if(version!==state.version)return;const loaded=await load();if(loaded)$('notice').textContent='Đã xử lý '+r.id;}catch(e){if(version!==state.version)return;$('notice').textContent=e.message;actions.querySelectorAll('button').forEach(x=>x.disabled=false)}};actions.append(b)}card.append(actions)}
+if(r.status==='approved'){const b=make('button','Sao chép tin đăng nhóm','secondary');b.onclick=async()=>{try{await navigator.clipboard.writeText(`${r.id}\n${r.title}\n${r.price_vnd.toLocaleString('vi-VN')} đ\n${r.condition}`);$('notice').textContent='Đã sao chép. Bạn tự đăng vào nhóm; hệ thống chưa đăng Zalo.'}catch{$('notice').textContent='Không sao chép được. Hãy chọn và sao chép nội dung trên tin.'}};card.append(b)}list.append(card)}}
+async function load(){const version=++state.version;const community=state.community;state.rows=[];render();$('notice').textContent='Đang tải…';try{const rows=await api('/listings?community_id='+encodeURIComponent(community));if(version!==state.version)return false;state.rows=rows;render();$('notice').textContent='Đã tải '+state.rows.length+' tin.';return true}catch(e){if(version!==state.version)return false;throw e}}
+$('access').onsubmit=async e=>{e.preventDefault();state.key=$('key').value;state.community=$('community').value.trim();try{await load()}catch(e){state.rows=[];render();$('notice').textContent=e.message}};
+$('filter').onchange=render;$('lock').onclick=()=>{state.version++;state.key='';state.rows=[];$('key').value='';render();$('notice').textContent='Đã khóa bảng.'};
+$('community').oninput=()=>{state.version++;state.rows=[];render();$('notice').textContent='Khu đã đổi. Bấm tải danh sách để xem khu mới.'};
+</script></html>

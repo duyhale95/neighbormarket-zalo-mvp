@@ -14,5 +14,10 @@ $env:BRIDGE_API_KEY = $config.bridge_key
 $env:ADMIN_API_KEY = $config.admin_key
 $env:DATABASE_PATH = Join-Path $PSScriptRoot 'private/market.db'
 Write-Host 'API: http://127.0.0.1:8000/docs'
+Write-Host 'Dashboard: http://127.0.0.1:8000/admin'
 Write-Host 'Local demo keys are in private/local-config.json. Do not upload this file.'
-python -m uvicorn backend.app:from_environment --factory --host 127.0.0.1 --port 8000
+$pythonPath = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
+if (-not (Test-Path -LiteralPath $pythonPath)) {
+    throw 'Create .venv and install requirements first; see README.'
+}
+& $pythonPath -m uvicorn backend.app:from_environment --factory --host 127.0.0.1 --port 8000

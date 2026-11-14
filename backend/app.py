@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 
@@ -78,6 +80,10 @@ def create_app(db_path, bridge_key, admin_key):
     @app.get('/health')
     def health():
         return {'status': 'ok', 'mode': 'local-mvp'}
+
+    @app.get('/admin', include_in_schema=False)
+    def admin_page():
+        return FileResponse(Path(__file__).parent / 'static' / 'admin.html', headers={'Cache-Control':'no-store'})
 
     @app.get('/listings', dependencies=[Depends(authenticate(admin_key))])
     def listings(community_id: str = Query(min_length=1, max_length=100)):
@@ -149,6 +155,34 @@ def create_app(db_path, bridge_key, admin_key):
                 result = {'reply': 'Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh hoặc AI tự do.'}
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
             return result
+
+    @app.post('/bridge/zalo', dependencies=[Depends(authenticate(bridge_key))])
+    async def zalo_bridge(request: Request, x_sender_id: str = Header(min_length=1, max_length=100),
+                          x_event_id: str = Header(min_length=1, max_length=200)):
+        # Single demo community, configured by server; never parsed from chat content.
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 16000:
+                raise HTTPException(413, 'Message too large')
+        try:
+            text = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            raise HTTPException(422, 'Text must be UTF-8')
+        if text.startswith('NM-TEXT:\n'):
+            text = text[len('NM-TEXT:\n'):]
+        if not text.strip() or len(text) > 4000:
+            raise HTTPException(422, 'Text must contain 1 to 4000 characters')
+        payload = Event(event_id=x_event_id, sender_id=x_sender_id,
+                        community_id=os.getenv('DEMO_COMMUNITY_ID', 'demo'), text=text)
+        try:
+            return await run_in_threadpool(event, payload)
+        except HTTPException as error:
+            # Business errors become safe user-facing replies; auth never enters here.
+            replies = {404:'Không tìm thấy tin thuộc quyền của bạn. Hãy kiểm tra mã tin.',
+                       409:'Tin không ở trạng thái phù hợp để thực hiện thao tác này.'}
+            return {'business_status':error.status_code,
+                    'reply':replies.get(error.status_code, str(error.detail))}
 
     return app
 

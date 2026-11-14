@@ -4,6 +4,8 @@ Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua d
 
 ## Bắt đầu chạy backend MVP
 
+**Bản local mới:** mở [bàn duyệt tin](http://127.0.0.1:8000/admin) sau khi chạy script. Xem [hướng dẫn Deplao và demo local](docs/local-demo.md). Có cầu nối text `/bridge/zalo` và công cụ xuất workflow riêng tư; chưa tự nhập hoặc bật workflow trong Deplao.
+
 Đã có backend local cho tạo nháp, xác nhận, BQL duyệt/từ chối, tìm tin và báo đã bán. Đây là nền nghiệp vụ độc lập; chưa phải demo Zalo end-to-end. Không cần Supabase hoặc Gemini key để chạy các bước thử bên dưới.
 
 Yêu cầu Python 3.11+ và PowerShell 7 cho script khởi động.
@@ -15,7 +17,7 @@ python -m pip install -r requirements.txt
 pwsh -File .\run-local.ps1
 ```
 
-Mở [API thử nghiệm local](http://127.0.0.1:8000/docs). Script tạo hai khóa thử khác nhau trong `private/local-config.json` (đã gitignore). Điền `bridge_key` ở ô `x-api-key` khi gọi `/events`, `admin_key` khi gọi API xem/duyệt tin. Không gửi khóa vào chat hoặc GitHub. API docs là công cụ thử, chưa phải dashboard BQL.
+Mở [API thử nghiệm local](http://127.0.0.1:8000/docs) hoặc [dashboard BQL local](http://127.0.0.1:8000/admin). Script tạo hai khóa thử khác nhau trong `private/local-config.json` (đã gitignore). Điền `bridge_key` ở ô `x-api-key` khi gọi `/events`, `admin_key` khi xem/duyệt tin. Không gửi khóa vào chat hoặc GitHub. Dashboard dùng khóa demo, chưa phải login BQL production.
 
 Đọc [hướng dẫn thử và hợp đồng tích hợp](docs/integration.md), [brief/PRD và UI flow](docs/brief-prd.md), [kế hoạch triển khai](docs/superpowers/plans/2026-11-14-marketplace-backend.md).
 
@@ -23,7 +25,7 @@ Mở [API thử nghiệm local](http://127.0.0.1:8000/docs). Script tạo hai kh
 python -m unittest discover -s tests -v
 ```
 
-Trạng thái: SQLite, lệnh text xác định và tìm kiếm từ khóa; chưa có AI extraction, xử lý ảnh, Supabase/pgvector, login BQL hoặc deploy VPS.
+Trạng thái: SQLite, dashboard duyệt tin, cầu nối Deplao text, lệnh xác định và tìm kiếm từ khóa; chưa có AI extraction, xử lý ảnh, Supabase/pgvector, login BQL production hoặc deploy VPS. Test AI dự kiến được giữ riêng ở `docs/planned-tests`, chưa thuộc tính năng đã triển khai.
 
 ## Đã làm
 - Chốt hướng MVP trên Zalo cá nhân, sử dụng Deplao và Gemini.
