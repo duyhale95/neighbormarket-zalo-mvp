@@ -1,5 +1,10 @@
 # NeighborMarket AI — Zalo Legit MVP
 
+> **Checkpoint tạm dừng theo yêu cầu người dùng:** đang tích hợp ảnh và publisher
+> nhiều phần từ main; chưa hoàn tất QA media UI/cleanup workflow/review cuối.
+> Xem [trạng thái, kiểm thử và cách chạy checkpoint](docs/MAIN_INTEGRATION_CHECKPOINT.md).
+> Các hướng dẫn text-only bên dưới mô tả bản trước; Zalo thật vẫn chưa xác minh.
+
 ## Partner workflow integration
 
 Nhánh `feat/integrate-partner-zalo-workflow` bổ sung adapter Deplao text an toàn,
