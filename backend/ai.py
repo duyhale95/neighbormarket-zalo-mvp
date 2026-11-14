@@ -118,4 +118,3 @@ def extract_listing(text: str) -> dict | None:
         return ground_extraction(ListingExtraction.model_validate_json(texts[0]), text)
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
         return None
-
