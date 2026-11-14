@@ -96,7 +96,7 @@ class OpenAIContractTests(unittest.TestCase):
 
     def test_prices_and_condition_must_be_grounded_in_message(self):
         for message, expected_price in [('Bàn cũ 400 nghìn', 400000), ('Bàn cũ 1 triệu', 1000000),
-                                        ('Bàn cũ 400000', 400000), ('Bàn cũ 400.000', 400000)]:
+                                        ('Bàn cũ giá 400000, còn tốt', 400000), ('Bàn cũ giá 400.000', 400000)]:
             extraction = {'intent': 'sell', 'title': 'Bàn', 'price_vnd': expected_price,
                           'condition': 'cũ', 'missing_fields': [], 'risk_flags': []}
             response = httpx.Response(200, request=httpx.Request('POST', 'https://example.test'),
@@ -112,7 +112,7 @@ class OpenAIContractTests(unittest.TestCase):
             json={'status': 'completed', 'output': [{'type': 'message', 'content': [
                 {'type': 'output_text', 'text': json.dumps(extraction)}]}]})
         with patch.dict('os.environ', {'AI_ENABLED': 'true', 'OPENAI_API_KEY': 'fake'}), patch('backend.ai.httpx.post', return_value=response):
-            result = extract_listing('Bàn đã dùng 1 năm, chưa nói giá')
+            result = extract_listing('Bàn đã dùng từ năm 400000, chưa nói giá')
         self.assertIsNone(result['price_vnd'])
         self.assertIsNone(result['condition'])
         self.assertEqual(set(result['missing_fields']), {'price_vnd', 'condition'})
