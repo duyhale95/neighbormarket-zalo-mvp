@@ -2,6 +2,10 @@
 
 Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua dashboard.
 
+## Mới: bài nhóm có ảnh món hàng
+
+Publisher v2 gửi ảnh đầu kèm nội dung bài, ảnh bổ sung và mã riêng. Tin không ảnh vẫn gửi văn bản. Cần thay workflow đăng nhóm cũ bằng bản v2; không đổi workflow chat/nhận ảnh. [Hướng dẫn cập nhật](docs/group-photos.md).
+
 ## Mới: thông báo đã bán và kiểm duyệt an toàn ảnh
 
 Chủ tin báo đã bán sẽ ngừng xuất hiện trong tìm kiếm và đưa thông báo ĐÃ BÁN vào nhóm qua publisher hiện có (không thu hồi bài cũ). Có workflow nhận ảnh riêng, upload ảnh local, OpenAI safety moderation và hàng đợi BQL xem ảnh có cờ. Xem [hướng dẫn cấu hình và nghiệm thu](docs/sold-and-image-safety.md). Ảnh cần gửi sau text tạo nháp, trước xác nhận.

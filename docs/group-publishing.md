@@ -1,5 +1,7 @@
 # Đăng tin đã duyệt lên Cư Dân Demo
 
+**Cập nhật ảnh:** dùng publisher v2 theo [hướng dẫn mới](group-photos.md); bản cũ không nhận job có ảnh.
+
 ## Trạng thái
 Backend/outbox và workflow mẫu đã triển khai, kiểm tra bằng API và giao diện với dữ liệu tổng hợp. Chưa tự import/bật workflow trong Deplao và chưa xác nhận bài thật xuất hiện trong nhóm. Group settings/keys chỉ lưu private trên máy.
 

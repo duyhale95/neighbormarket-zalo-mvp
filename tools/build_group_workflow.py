@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def build(key):
-    headers=json.dumps({'X-API-Key':key,'Content-Type':'application/json'})
+    headers=json.dumps({'X-API-Key':key,'Content-Type':'application/json','X-Publisher-Version':'2'})
     nodes=[
         {'id':'schedule','type':'trigger.schedule','label':'Every20Seconds','position':{'x':320,'y':40},
          'config':{'cronExpression':'*/20 * * * * *','timezone':'Asia/Ho_Chi_Minh'}},
@@ -26,12 +26,32 @@ def build(key):
                    'headers':headers,'timeout':10000,
                    'body':'{"token":"{{ $node.Claim.data.token }}","message_id":"{{ $node.PostToGroup.msgId }}"}'}},
     ]
+    nodes.extend([
+        {'id':'media','type':'logic.if','label':'HasPhoto','position':{'x':320,'y':660},
+         'config':{'left':'{{ $node.Claim.data.has_image }}','operator':'equals','right':'true'}},
+        {'id':'photo','type':'zalo.sendImage','label':'PostPhoto','position':{'x':620,'y':840},
+         'config':{'threadId':'{{ $node.Claim.data.group_id }}','threadType':'1',
+                   'filePath':'{{ $node.Claim.data.image_path }}','message':'{{ $node.Claim.data.message }}','continueOnError':False}},
+        {'id':'photoReceipt','type':'logic.if','label':'HasPhotoReceipt','position':{'x':620,'y':1000},
+         'config':{'left':'{{ $node.PostPhoto.msgId }}','operator':'not_empty','right':''}},
+        {'id':'photoAck','type':'output.httpRequest','label':'SavePhotoReceipt','position':{'x':620,'y':1160},
+         'config':{'method':'POST','url':'http://127.0.0.1:8000/group-publications/{{ $node.Claim.data.job_id }}/ack',
+                   'headers':headers,'timeout':10000,
+                   'body':'{"token":"{{ $node.Claim.data.token }}","message_id":"{{ $node.PostPhoto.msgId }}"}'}},
+    ])
+    positions={'schedule':(480,40),'claim':(480,220),'httpok':(480,400),'ready':(480,580),'media':(480,760),
+               'send':(160,960),'receipt':(160,1140),'ack':(160,1320),
+               'photo':(800,960),'photoReceipt':(800,1140),'photoAck':(800,1320)}
+    for node in nodes:
+        x,y=positions[node['id']];node['position']={'x':x,'y':y}
+    # Separate receipt branches prevent IF skip propagation from suppressing a shared ACK.
     edges=[]
     for i,(a,b,handle) in enumerate([('schedule','claim','default'),('claim','httpok','default'),('httpok','ready','true'),
-                                    ('ready','send','true'),('send','receipt','default'),('receipt','ack','true')]):
+                                    ('ready','media','true'),('media','send','false'),('send','receipt','default'),('receipt','ack','true'),
+                                    ('media','photo','true'),('photo','photoReceipt','default'),('photoReceipt','photoAck','true')]):
         edges.append({'id':f'e{i}','source':a,'target':b,'sourceHandle':handle})
-    return {'_deplaoWorkflow':True,'_version':1,'channel':'zalo','name':'Meo Meo - Publish Approved to Group',
-            'description':'Select Meo Meo. Group target is pinned in local backend config. Polls every20s; posts only approved outbox jobs. Contains local key: never share.',
+    return {'_deplaoWorkflow':True,'_version':1,'channel':'zalo','name':'Meo Meo - Publish Approved with Photos v2',
+            'description':'Select Meo Meo; disable previous GROUP publisher, keep private chat and image intake workflows. v2 sends stored product photos with caption, then extra photos and copyable code. Local file paths require same machine. Contains local key: never share.',
             'nodes':nodes,'edges':edges}
 
 
@@ -45,5 +65,5 @@ if __name__=='__main__':
     root=Path(__file__).resolve().parents[1]
     config=json.loads((root/'private/local-config.json').read_text(encoding='utf-8-sig'))
     (root/'private/group-settings.json').write_text(json.dumps({'community_id':args.community,'group_id':args.group_id,'group_name':args.group_name.strip()},ensure_ascii=False),encoding='utf-8')
-    (root/'private/group-publisher-workflow.json').write_text(json.dumps(build(config['bridge_key']),ensure_ascii=False,indent=2),encoding='utf-8')
+    (root/'private/group-publisher-workflow-v2.json').write_text(json.dumps(build(config['bridge_key']),ensure_ascii=False,indent=2),encoding='utf-8')
     print('Created private group settings and publisher workflow. No Zalo message sent.')

@@ -104,7 +104,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
     from backend.natural import NaturalIntake
     intake = NaturalIntake(database, extractor) if extractor else None
     from backend.publishing import GroupPublisher
-    publisher = GroupPublisher(database, group_target)
+    publisher = GroupPublisher(database, group_target, db_path.parent/'group-media')
     from backend.images import ImageStore
     images = ImageStore(database, moderator)
 

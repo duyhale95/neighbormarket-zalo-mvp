@@ -11,7 +11,7 @@
 ## 2. Kiểm duyệt ảnh
 Mục tiêu đợt này là nội dung an toàn, không phải xác thực ảnh thật, quyền sở hữu, hàng cấm đầy đủ hay tìm ảnh trùng. Dùng [OpenAI Moderation API](https://developers.openai.com/api/docs/guides/moderation) với `omni-moderation-latest`, gửi ảnh và nội dung mô tả cùng nhau. Không dùng model chat để tự phán quyết xuất bản.
 
-Ảnh được chuẩn hóa JPEG, bỏ EXIF, tối đa 1600px chiều dài. Đầu vào PNG/JPEG/WebP tối đa4MiB,16triệu pixel; tối đa5ảnh/tin. Dữ liệu nằm trong SQLite private. Ảnh nhóm chưa được gửi kèm bài ở phiên bản này.
+Ảnh được chuẩn hóa JPEG, bỏ EXIF, tối đa 1600px chiều dài. Đầu vào PNG/JPEG/WebP tối đa4MiB,16triệu pixel; tối đa5ảnh/tin. Dữ liệu nằm trong SQLite private. Ảnh có thể gửi kèm bài bằng publisher v2; xem [hướng dẫn đăng ảnh](group-photos.md).
 
 ### Bật khóa an toàn
 Không gửi key vào chat. Thu hồi khóa đã từng lộ, tạo khóa mới ở trang quản lý OpenAI, chạy:

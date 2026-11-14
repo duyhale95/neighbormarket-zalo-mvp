@@ -34,7 +34,7 @@ def main():
                     except httpx.ConnectError: pass
                     time.sleep(.1)
                 else: raise RuntimeError('Test server not ready')
-                h = {'X-API-Key':env['BRIDGE_API_KEY']}
+                h = {'X-API-Key':env['BRIDGE_API_KEY'],'X-Publisher-Version':'2'}
                 def send(text, event_id):
                     r = api.post('/events',headers=h,json=dict(event_id=event_id,community_id='demo',sender_id='test',text=text))
                     r.raise_for_status();return r.json()
@@ -69,11 +69,12 @@ def main():
                     for part in ('post','code'):
                         job=api.post('/group-publications/claim',headers=h).json()
                         assert job['ready'] and job['part']==part
+                        if part=='post':assert job['has_image'] and Path(job['image_path']).is_file()
                         if part=='code':assert job['message']==id
                         receipt=api.post('/group-publications/'+job['job_id']+'/ack',headers=h,json={'token':job['token'],'message_id':'123456'})
                         receipt.raise_for_status()
                     page.get_by_role('button',name='Tải danh sách').click()
-                    expect(page.get_by_text('Nhóm thử: Đã đăng bài và mã tin',exact=True)).to_be_visible()
+                    expect(page.get_by_text('Nhóm thử: Đã đăng bài, ảnh (nếu có) và mã tin',exact=True)).to_be_visible()
                     root=Path('private/qa');root.mkdir(parents=True,exist_ok=True)
                     page.screenshot(path=str(root/'admin-desktop.png'),full_page=True)
                     page.set_viewport_size({'width':390,'height':844})
