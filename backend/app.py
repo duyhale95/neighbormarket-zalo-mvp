@@ -15,12 +15,12 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 import httpx
 
 from backend.ai import ListingExtraction, extract_listing
 from backend.conversation import HELP, clear_context, deterministic_patch, draft_action, parse_action, snapshot
-from backend.moderation import BLOCKING_FLAGS, assess_listing, moderation_flags
+from backend.moderation import BLOCKING_FLAGS, moderation_flags
 
 audit_logger = logging.getLogger('neighbormarket.audit')
 audit_logger.setLevel(logging.INFO)
@@ -55,11 +55,19 @@ class DeliveryAck(BaseModel):
     sent_message_id: str | None = Field(default=None, max_length=200)
     transport_mode: Literal['mock', 'deplao', 'unverified'] = 'unverified'
 
+    @model_validator(mode='after')
+    def valid_receipt(self):
+        pattern = r'[0-9]{1,100}' if self.transport_mode == 'deplao' else r'mock-[A-Za-z0-9-]{1,100}'
+        if self.transport_mode != 'unverified' and not re.fullmatch(pattern, self.sent_message_id or ''):
+            raise ValueError('Explicit transport requires a matching message receipt')
+        return self
+
 
 class DeliveryFailure(BaseModel):
     claim_token: str = Field(min_length=1, max_length=200)
     outcome: Literal['not_sent', 'unknown']
     error: str = Field(min_length=1, max_length=200)
+    transport_mode: Literal['mock', 'deplao', 'unverified'] = 'unverified'
 
 
 class DeliveryReconciliation(BaseModel):
@@ -241,7 +249,9 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 lease_expires_at=datetime('now','+5 minutes'), updated_at=CURRENT_TIMESTAMP WHERE id=?""", (token, row['id']))
             db.commit()
             audit('delivery', delivery_id=row['id'], listing_id=row['listing_id'], delivery_status='claimed')
-            message = (f"[NEIGHBORMARKET — TIN ĐÃ DUYỆT]\n\nSản phẩm: {public_text(row['title'])}\n"
+            # A leading '[' activates Deplao's structured-response parser, even
+            # for invalid outer JSON containing seller-controlled segment objects.
+            message = (f"NEIGHBORMARKET — TIN ĐÃ DUYỆT\n\nSản phẩm: {public_text(row['title'])}\n"
                        f"Giá: {row['price_vnd']:,}đ\nTình trạng: {public_text(row['condition'])}\n\n"
                        f"Mã tin: {row['listing_id']}\n\nNhắn riêng cho Meo Meo để tìm hiểu sản phẩm.")
             return {'delivery_id': row['id'], 'claim_token': token, 'group_id': row['target_group_id'],
@@ -273,7 +283,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             status = 'unknown' if request.outcome == 'unknown' else 'failed'
             # Do not persist arbitrary SDK errors that might contain credentials.
             error = request.error if request.error in ('timeout', 'connection_error', 'send_rejected') else 'other'
-            db.execute('UPDATE listing_deliveries SET status=?, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', (status, error, delivery_id))
+            db.execute('UPDATE listing_deliveries SET status=?, last_error=?, transport_mode=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', (status, error, request.transport_mode, delivery_id))
             db.commit()
             audit('delivery', delivery_id=delivery_id, listing_id=row['listing_id'], delivery_status=status, error=error)
             return {'delivery_id': delivery_id, 'status': status}
@@ -307,7 +317,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 raise HTTPException(409, 'Only unknown deliveries may be reconciled')
             status = 'sent' if request.decision == 'sent' else 'failed'
             db.execute('INSERT INTO delivery_reconciliations(delivery_id,decision,reason) VALUES (?,?,?)', (delivery_id, request.decision, request.reason))
-            db.execute('UPDATE listing_deliveries SET status=?, sent_message_id=?, claim_token=NULL, last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+            db.execute("UPDATE listing_deliveries SET status=?, sent_message_id=?, claim_token=NULL, transport_mode='manual', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                        (status, request.sent_message_id if status == 'sent' else None, None if status == 'sent' else 'reconciled_not_sent', delivery_id))
             db.commit()
             audit('reconcile', actor='admin-key', delivery_id=delivery_id, listing_id=row['listing_id'], delivery_status=status)
@@ -347,8 +357,10 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                       result='extracted' if extracted else 'fallback')
                 ai_status = 'advisory' if extracted else 'unavailable'
                 model_version = model
-            if extracted is None:
-                extracted = deterministic_patch(text, context_snapshot['data'])
+            if extracted is None or extracted.intent == 'other':
+                fallback = deterministic_patch(text, context_snapshot['data'])
+                if fallback is not None:
+                    extracted = fallback
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()

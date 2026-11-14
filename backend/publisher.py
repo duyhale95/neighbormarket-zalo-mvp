@@ -84,7 +84,7 @@ class Publisher:
         try:
             failure = self.client.post(f'/deliveries/{job.delivery_id}/failure', headers=self.headers,
                 json={'claim_token': job.claim_token, 'outcome': 'not_sent' if status == 'failed' else 'unknown',
-                      'error': outcome.error or 'other'}, timeout=8)
+                      'error': outcome.error or 'other', 'transport_mode': 'mock' if simulated else 'deplao'}, timeout=8)
             recorded = failure.status_code == 200
         except httpx.HTTPError:
             pass  # claimed -> unknown on expiry; never put back in queued.

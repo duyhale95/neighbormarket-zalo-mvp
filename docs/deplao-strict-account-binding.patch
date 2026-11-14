@@ -1,0 +1,19 @@
+--- a/src/services/workflow/WorkflowEngineService.ts
++++ b/src/services/workflow/WorkflowEngineService.ts
+@@ -4250,11 +4250,7 @@
+   private getApi(pageId: string): any {
+-    // Try to find connection by pageId or use any connected account
+-    let conn = ConnectionManager.getConnection(pageId);
+-    if (!conn) {
+-      // Try first available connected account
+-      for (const [, c] of ConnectionManager.getAllConnections()) {
+-        if (c.connected) { conn = c; break; }
+-      }
+-    }
+-    if (!conn || !conn.api) throw new Error(`Account ${pageId || 'unknown'} không connected`);
++    // Fail closed: never borrow another account's connection for a workflow.
++    const conn = ConnectionManager.getConnection(pageId);
++    if (!pageId || !conn || !conn.connected || !conn.api) {
++      throw new Error(`Account ${pageId || 'unknown'} is not connected`);
++    }
+     return conn.api;

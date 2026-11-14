@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from tools.deplao_compat import verify_strict_runtime
+
 SCHEMA_FIELDS = {
     'trigger.message': {'threadType','fromId','senderRole','ignoreOwn','onlyOwn','keyword','messageTypes','debounceSeconds'},
     'trigger.schedule': {'cronExpression','timezone'},
@@ -54,7 +56,9 @@ def _graph(name: str, nodes: list[dict], links: list[tuple[str,str,str]]) -> dic
     return graph
 
 
-def build_intake(key: str, account_id: str, sender_id: str) -> dict:
+def build_intake(key: str, account_id: str, sender_id: str, *, binding_verified: bool = False) -> dict:
+    if not binding_verified:
+        raise ValueError('Live graph blocked until strict runtime account binding is verified')
     _key(key); _digits(account_id); _digits(sender_id)
     nodes=[
         _node('ReceivePrivate','trigger.message',{'threadType':'0','fromId':sender_id,
@@ -77,14 +81,17 @@ def build_intake(key: str, account_id: str, sender_id: str) -> dict:
         ('Intake','HttpOK','default'),('HttpOK','HasReply','true'),('HasReply','PrivateReply','true')])
 
 
-def build_publisher(key: str, account_id: str, group_id: str, *, policy_validated: bool = False) -> dict:
+def build_publisher(key: str, account_id: str, group_id: str, *, policy_validated: bool = False,
+                    binding_verified: bool = False) -> dict:
+    if not binding_verified:
+        raise ValueError('Live graph blocked until strict runtime account binding is verified')
     _key(key); _digits(account_id); _digits(group_id)
     if not policy_validated:
         raise ValueError('Validate human policy and allowed group/account before generating a live publisher')
     headers={'X-API-Key':key,'Content-Type':'application/json'}
     job='{{ $node.Claim.data.delivery_id }}'
     token='{{ $node.Claim.data.claim_token }}'
-    failbody=json.dumps({'claim_token':token,'outcome':'unknown','error':'other'})
+    failbody=json.dumps({'claim_token':token,'outcome':'unknown','error':'other','transport_mode':'deplao'})
     nodes=[
         _node('Schedule','trigger.schedule',{'cronExpression':'*/20 * * * * *','timezone':'Asia/Ho_Chi_Minh'},0),
         _if('AccountOK','{{ $pageId }}','equals',account_id,1),
@@ -94,7 +101,7 @@ def build_publisher(key: str, account_id: str, group_id: str, *, policy_validate
         _if('ValidJob','{{ $node.Claim.data.delivery_id }}','regex','^[a-f0-9]{32}$',5),
         _if('ValidToken',token,'regex','^[A-Za-z0-9_-]{20,100}$',6),
         _node('SendGroup','zalo.sendMessage',{'threadId':group_id,'threadType':'1',
-            'message':'{{ $node.Claim.data.message }}','continueOnError':False,
+            'message':'Tin đăng đã qua BQL kiểm duyệt\n{{ $node.Claim.data.message }}','continueOnError':False,
             'sendDelayMinSeconds':1,'sendDelayMaxSeconds':2},7),
         _if('RealSend','{{ $node.SendGroup.simulated }}','not_equals','true',8),
         _if('Receipt','{{ $node.SendGroup.msgId }}','regex','^[0-9]{1,100}$',9),
@@ -152,7 +159,7 @@ def validate_graph(graph: dict) -> None:
 def write_private(root: Path, output: Path, data: dict) -> None:
     private=(root/'private').resolve()
     target=output.resolve()
-    if not target.is_relative_to(private):
+    if not private.is_relative_to(root.resolve()) or not target.is_relative_to(private):
         raise ValueError('Credential-bearing output must stay under private/')
     target.parent.mkdir(parents=True,exist_ok=True)
     # Exclusive creation: do not overwrite a local workflow edited by an operator.
@@ -166,17 +173,30 @@ def main() -> None:
     parser.add_argument('--account-id',required=True)
     parser.add_argument('--sender-id',required=True,help='One verified tester; do not enable all-resident intake yet')
     parser.add_argument('--group-id',required=True)
+    parser.add_argument('--community',default='demo')
+    parser.add_argument('--deplao-source',type=Path,required=True,help='Reviewed source with strict-account patch; unmodified upstream is refused')
+    parser.add_argument('--installed-build-verified',action='store_true',help='Operator verified this exact strict source was built and is running')
     parser.add_argument('--policy-validated',action='store_true',help='Operator verified mandatory review policy and allowed group/account')
     args=parser.parse_args()
+    if not args.community.strip() or len(args.community)>100:
+        parser.error('Invalid community')
+    if not args.installed_build_verified:
+        parser.error('Confirm the checked strict build is actually installed/running; see DEPLAO_COMPATIBILITY.md')
+    try:
+        binding_hash=verify_strict_runtime(args.deplao_source)
+    except (OSError,ValueError) as error:
+        parser.error(str(error))
     root=Path(__file__).resolve().parents[1]
     config=json.loads((root/'private/local-config.json').read_text(encoding='utf-8-sig'))
     if not config.get('intake_key'):
         parser.error('Run .\\run-intake.ps1 once to initialize a distinct intake key, then stop it before generation')
-    intake=build_intake(config['intake_key'],args.account_id,args.sender_id)
-    publisher=build_publisher(config['bridge_key'],args.account_id,args.group_id,policy_validated=args.policy_validated)
+    intake=build_intake(config['intake_key'],args.account_id,args.sender_id,binding_verified=True)
+    publisher=build_publisher(config['bridge_key'],args.account_id,args.group_id,
+                             policy_validated=args.policy_validated,binding_verified=True)
     outputs={'deplao-intake.json':intake,'deplao-publisher.json':publisher,
         'zalo-channel.json':{'account_id':args.account_id,'sender_ids':[args.sender_id],
-            'group_id':args.group_id,'community_id':'demo','policy_validated':True}}
+            'group_id':args.group_id,'community_id':args.community,'policy_validated':True,
+            'strict_account_binding_verified':True,'deplao_engine_sha256':binding_hash}}
     if any((root/'private'/name).exists() for name in outputs):
         parser.error('Existing generated files found. Preserve/review them before generating new files; nothing overwritten')
     for name,data in outputs.items(): write_private(root,root/'private'/name,data)

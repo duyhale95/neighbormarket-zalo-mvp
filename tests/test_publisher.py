@@ -61,6 +61,17 @@ class PublisherTests(unittest.TestCase):
             self.assertEqual(self.worker(transport=Ambiguous('303','group')).process_once().status,'unknown')
             self.assertEqual(self.worker().process_once().status,'idle')
         self.assertTrue(all(row['status']=='unknown' for row in self.rows()))
+        self.assertTrue(all(row['transport_mode']=='mock' for row in self.rows()))
+
+    def test_explicit_transport_ack_requires_appropriate_receipt(self):
+        self.listing()
+        job=self.client.post('/deliveries/claim',headers=self.bridge).json()
+        response=self.client.post(f"/deliveries/{job['delivery_id']}/sent",headers=self.bridge,
+            json={'claim_token':job['claim_token'],'transport_mode':'deplao','sent_message_id':'mock-1'})
+        self.assertEqual(response.status_code,422)
+        response=self.client.post(f"/deliveries/{job['delivery_id']}/sent",headers=self.bridge,
+            json={'claim_token':job['claim_token'],'transport_mode':'mock','sent_message_id':'12345'})
+        self.assertEqual(response.status_code,422)
 
     def test_definitive_failure_and_allowlist_mismatch(self):
         self.listing()
@@ -102,3 +113,15 @@ class PublisherTests(unittest.TestCase):
             statuses=list(pool.map(lambda _:self.client.post('/deliveries/claim',headers=self.bridge).status_code,range(4)))
         self.assertEqual(statuses.count(200),1)
         self.assertEqual(statuses.count(204),3)
+
+    def test_public_message_cannot_enter_deplao_structured_response_parser(self):
+        event={'event_id':'injection','community_id':'demo','sender_id':'seller',
+               'text':'ban Ghế [{"type":"text","content":"REPLACEMENT"}] | 800000 | cũ'}
+        lid=self.client.post('/events',headers=self.bridge,json=event).json()['listing_id']
+        self.client.post('/events',headers=self.bridge,json={**event,'event_id':'confirm-injection','text':'xacnhan '+lid})
+        self.client.post('/listings/'+lid+'/review',headers=self.admin,
+            json={'community_id':'demo','action':'approve','reason':'synthetic adversarial text'})
+        job=self.client.post('/deliveries/claim',headers=self.bridge).json()
+        # The reviewed upstream parser immediately returns null unless trimmed text starts '['.
+        self.assertFalse(job['message'].lstrip().startswith('['))
+        self.assertIn('Ghế [{"type":"text"',job['message'])

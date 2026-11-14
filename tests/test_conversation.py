@@ -14,6 +14,8 @@ from backend.vnd import parse_vnd
 
 class ConversationTests(unittest.TestCase):
     def setUp(self):
+        self.environment=patch.dict('os.environ',{'AI_ENABLED':'false','OPENAI_API_KEY':''})
+        self.environment.start()
         self.tmp=tempfile.TemporaryDirectory()
         self.path=Path(self.tmp.name)/'db'
         self.client=TestClient(create_app(self.path,'bridge','admin',target_group_id='group'))
@@ -21,6 +23,7 @@ class ConversationTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.close(); self.tmp.cleanup()
+        self.environment.stop()
 
     def event(self,text,sender='seller',community='demo',event_id=None):
         self.seq+=1
@@ -105,3 +108,27 @@ class ConversationTests(unittest.TestCase):
         self.assertNotIn('private-key',str(response))
         self.assertEqual(self.rows()[0]['moderation']['ai_status'],'unavailable')
         self.assertEqual(self.client.post('/deliveries/claim',headers={'X-API-Key':'bridge'}).status_code,204)
+
+    def test_switching_item_in_incomplete_context_cannot_reuse_previous_price(self):
+        self.event('Mình muốn bán chiếc ghế, giá 800k.')
+        response=self.event('Mình muốn bán chiếc máy giặt, dùng 6 tháng.')
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(self.rows(),[])
+
+    def test_negated_condition_is_preserved_verbatim(self):
+        for condition in ('không còn tốt','không hỏng','chưa dùng','không phải mới'):
+            with self.subTest(condition=condition):
+                self.event('hủy')
+                self.event(f'Mình muốn bán chiếc ghế, giá 800k, {condition}.')
+                self.assertEqual(self.rows()[0]['condition'],condition)
+
+    def test_unhelpful_ai_other_does_not_disable_safe_clarification(self):
+        self.event('Mình muốn bán chiếc ghế.')
+        other={'intent':'other','title':None,'price_vnd':None,'condition':None,
+               'missing_fields':['title','price_vnd','condition'],'risk_flags':[]}
+        with patch('backend.app.extract_listing',return_value=other), patch.dict(
+                'os.environ',{'AI_ENABLED':'true','OPENAI_API_KEY':'fake'}):
+            result=self.event('800k, còn tốt').json()
+        self.assertEqual(result['status'],'draft')
+        self.assertEqual(self.rows()[0]['price_vnd'],800000)
+        self.assertEqual(self.rows()[0]['condition'],'còn tốt')

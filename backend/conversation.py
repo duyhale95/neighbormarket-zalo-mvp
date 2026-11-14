@@ -77,7 +77,9 @@ def deterministic_patch(text: str, previous: dict) -> ListingExtraction | None:
         price=parse_vnd(original.strip('., '))
         if price is not None: spans=[(0,len(original),price)]
     price=spans[0][2] if len({s[2] for s in spans})==1 else None
-    condition_match=re.search(r'\b(?:da (?:su dung|dung)|dung(?: duoc)?|su dung|con tot|con moi|moi|cu|khong hu hong|hong)\b',norm)
+    condition_match=re.search(
+        r'\b(?:(?:khong|chua|chang)\s+(?:(?:he|tung|con|bi|duoc|phai)\s+){0,2})?'
+        r'(?:da (?:su dung|dung)|dung(?: duoc)?|su dung|con tot|con moi|moi|cu|khong hu hong|hong)\b',norm)
     condition=None
     if condition_match:
         end=len(original)
@@ -165,7 +167,7 @@ def draft_action(db: sqlite3.Connection, event: Any, command: str, body: str,
         if current['revision']!=expected_revision:
             raise HTTPException(409,'Bản nháp vừa thay đổi. Xem phản hồi mới trước khi gửi lại.')
         values=dict(current['data'].get('values',{}))
-        if current['listing_id'] and extracted.title and fold(extracted.title)!=fold(values.get('title','')):
+        if values.get('title') and extracted.title and fold(extracted.title)!=fold(values['title']):
             raise HTTPException(409,'Muốn đổi món, hủy bản nháp trước hoặc dùng sửa tiêu đề.')
         for field in FIELDS:
             value=getattr(extracted,field)

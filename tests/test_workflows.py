@@ -7,8 +7,14 @@ from tools.build_deplao_workflows import build_intake, build_publisher, validate
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_live_graph_generation_requires_verified_strict_account_binding(self):
+        with self.assertRaises(ValueError):
+            build_intake('test-intake-key-123456','303','202')
+        with self.assertRaises(ValueError):
+            build_publisher('test-bridge-key-123456','303','404',policy_validated=True)
+
     def test_intake_uses_raw_text_metadata_headers_and_original_private_thread(self):
-        graph=build_intake('test-intake-key-123456', '303', '202')
+        graph=build_intake('test-intake-key-123456', '303', '202',binding_verified=True)
         validate_graph(graph)
         nodes={n['label']:n for n in graph['nodes']}
         self.assertEqual(nodes['ReceivePrivate']['config']['threadType'],'0')
@@ -22,8 +28,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_publisher_pins_account_group_receipt_and_real_mode(self):
         with self.assertRaises(ValueError):
-            build_publisher('test-bridge-key-123456','303','404')
-        graph=build_publisher('test-bridge-key-123456','303','404',policy_validated=True)
+            build_publisher('test-bridge-key-123456','303','404',binding_verified=True)
+        graph=build_publisher('test-bridge-key-123456','303','404',policy_validated=True,binding_verified=True)
         validate_graph(graph)
         nodes={n['label']:n for n in graph['nodes']}
         self.assertEqual(nodes['SendGroup']['config']['threadId'],'404')
@@ -37,18 +43,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(nodes['Schedule']['config']['cronExpression'],'*/20 * * * * *')
 
     def test_validation_rejects_unsupported_fields_dangling_edges_and_template_refs(self):
-        graph=build_intake('test-intake-key-123456','303','202')
+        graph=build_intake('test-intake-key-123456','303','202',binding_verified=True)
         graph['nodes'][0]['config']['unsupported']='invented'
         with self.assertRaises(ValueError): validate_graph(graph)
-        graph=build_intake('test-intake-key-123456','303','202')
+        graph=build_intake('test-intake-key-123456','303','202',binding_verified=True)
         graph['edges'][0]['target']='missing'
         with self.assertRaises(ValueError): validate_graph(graph)
-        graph=build_intake('test-intake-key-123456','303','202')
+        graph=build_intake('test-intake-key-123456','303','202',binding_verified=True)
         graph['nodes'][-1]['config']['message']='{{ $node.NoSuchNode.reply }}'
         with self.assertRaises(ValueError): validate_graph(graph)
 
     def test_credentials_only_written_to_private_path_and_not_overwritten(self):
-        graph=build_intake('test-intake-key-123456','303','202')
+        graph=build_intake('test-intake-key-123456','303','202',binding_verified=True)
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             with self.assertRaises(ValueError): write_private(root,root/'public/workflow.json',graph)
