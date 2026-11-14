@@ -2,6 +2,10 @@
 
 Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua dashboard.
 
+## Mới: đưa tin đã duyệt lên nhóm demo
+
+Có outbox và workflow lịch Deplao đăng bài + mã món đồ riêng; dashboard hiển thị trạng thái đăng. Người mua có thể gửi riêng mã cho bot để xem tin còn bán. Xem [hướng dẫn bật đăng nhóm](docs/group-publishing.md). Cần import/bật workflow publisher mới trong Deplao; chỉ chạy backend không tự gửi nhóm.
+
 ## Mới: đăng bán bằng câu tự nhiên
 
 Backend có thể dùng Gemini để hiểu “Mình muốn thanh lý ghế làm việc 500k”, hỏi thông tin còn thiếu và giữ bản nháp qua nhiều lượt. Người bán kiểm tra, xác nhận; BQL duyệt như trước. Không cần đổi workflow backend hiện tại. Xem [hướng dẫn và cấu hình](docs/natural-text.md).

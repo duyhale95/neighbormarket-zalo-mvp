@@ -14,6 +14,14 @@ $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $env:BRIDGE_API_KEY = $config.bridge_key
 $env:ADMIN_API_KEY = $config.admin_key
 $env:DATABASE_PATH = Join-Path $PSScriptRoot 'private/market.db'
+$groupSettingsPath = Join-Path $PSScriptRoot 'private/group-settings.json'
+if (Test-Path -LiteralPath $groupSettingsPath) {
+    $groupSettings = Get-Content -LiteralPath $groupSettingsPath -Raw | ConvertFrom-Json
+    $env:ZALO_GROUP_ID = $groupSettings.group_id
+    $env:ZALO_GROUP_NAME = $groupSettings.group_name
+    $env:DEMO_COMMUNITY_ID = $groupSettings.community_id
+    Write-Host ('Group publisher target configured: ' + $groupSettings.group_name)
+}
 $settingsPath = Join-Path $PSScriptRoot 'private/gemini-settings.json'
 if (Test-Path -LiteralPath $settingsPath) {
     $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json

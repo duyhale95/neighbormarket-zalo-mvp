@@ -16,7 +16,7 @@ def main():
     with tempfile.TemporaryDirectory() as folder:
         env = os.environ.copy()
         env.update(BRIDGE_API_KEY=secrets.token_hex(32), ADMIN_API_KEY=secrets.token_hex(32),
-                   DATABASE_PATH=str(Path(folder)/'ui.db'), DEMO_COMMUNITY_ID='demo')
+                   DATABASE_PATH=str(Path(folder)/'ui.db'), DEMO_COMMUNITY_ID='demo', ZALO_GROUP_ID='12345', ZALO_GROUP_NAME='Nhóm thử')
         with socket.socket() as s:
             s.bind(('127.0.0.1',0)); port=s.getsockname()[1]
         url = f'http://127.0.0.1:{port}'
@@ -53,6 +53,15 @@ def main():
                     page.get_by_label('Lý do xử lý '+id).fill('Kiểm tra UI bằng dữ liệu tổng hợp')
                     page.get_by_role('button',name='Duyệt tin',exact=True).click()
                     expect(page.get_by_role('button',name='Sao chép tin đăng nhóm')).to_be_visible()
+                    expect(page.get_by_text('Nhóm thử: Đang chờ đăng',exact=True)).to_be_visible()
+                    for part in ('post','code'):
+                        job=api.post('/group-publications/claim',headers=h).json()
+                        assert job['ready'] and job['part']==part
+                        if part=='code':assert job['message']==id
+                        receipt=api.post('/group-publications/'+job['job_id']+'/ack',headers=h,json={'token':job['token'],'message_id':'123456'})
+                        receipt.raise_for_status()
+                    page.get_by_role('button',name='Tải danh sách').click()
+                    expect(page.get_by_text('Nhóm thử: Đã đăng bài và mã tin',exact=True)).to_be_visible()
                     root=Path('private/qa');root.mkdir(parents=True,exist_ok=True)
                     page.screenshot(path=str(root/'admin-desktop.png'),full_page=True)
                     page.set_viewport_size({'width':390,'height':844})

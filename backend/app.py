@@ -37,6 +37,9 @@ def normalize(value):
 
 
 def parse_command(text):
+    code = re.fullmatch(r'(?:xem\s+)?(nm-[a-z0-9]+)', ' '.join(normalize(text).split()))
+    if code:
+        return 'xem', code.group(1).upper()
     match = re.fullmatch(r'xac\s*nhan(?:\s+(nm-[a-z0-9]+))?', ' '.join(normalize(text).split()))
     if match:
         return 'xacnhan', (match.group(1) or '').upper()
@@ -44,7 +47,7 @@ def parse_command(text):
     return normalize(command), body.strip()
 
 
-def create_app(db_path, bridge_key, admin_key, extractor=None):
+def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None):
     if not bridge_key or not admin_key or bridge_key == admin_key:
         raise ValueError('Configure two different nonempty API keys')
     db_path = Path(db_path)
@@ -94,12 +97,16 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
     app = FastAPI(title='NeighborMarket local MVP', version='0.1.0')
     from backend.natural import NaturalIntake
     intake = NaturalIntake(database, extractor) if extractor else None
+    from backend.publishing import GroupPublisher
+    publisher = GroupPublisher(database, group_target)
 
     def authenticate(expected):
         def check(x_api_key: str = Header(default='')):
             if not hmac.compare_digest(x_api_key.encode(), expected.encode()):
                 raise HTTPException(401, 'Invalid API key')
         return check
+
+    publisher.install(app, authenticate, bridge_key, admin_key)
 
     @app.get('/health')
     def health():
@@ -112,7 +119,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
     @app.get('/listings', dependencies=[Depends(authenticate(admin_key))])
     def listings(community_id: str = Query(min_length=1, max_length=100)):
         with database() as db:
-            return [dict(row) for row in db.execute(
+            return [publisher.decorate(db, row) for row in db.execute(
                 'SELECT * FROM listings WHERE community_id=? ORDER BY rowid DESC LIMIT 100', (community_id,))]
 
     @app.post('/listings/{listing_id}/review', dependencies=[Depends(authenticate(admin_key))])
@@ -129,6 +136,8 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
             db.execute('UPDATE listings SET status=? WHERE id=?', (status, listing_id))
             db.execute('INSERT INTO reviews(listing_id,action,reason) VALUES (?,?,?)',
                        (listing_id, request.action, request.reason))
+            if status == 'approved':
+                publisher.enqueue(db, {**dict(row), 'status': status})
             return {'listing_id': listing_id, 'status': status}
 
     @app.post('/events', dependencies=[Depends(authenticate(bridge_key))])
@@ -138,7 +147,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
         text = event.text.strip()
         command, body = parse_command(text)
         cancelling = normalize(text) == 'huy nhap'
-        deterministic = command in ('xacnhan', 'daban', 'tim') or (command == 'ban' and '|' in body) or cancelling
+        deterministic = command in ('xacnhan', 'daban', 'tim', 'xem') or (command == 'ban' and '|' in body) or cancelling
         if intake and not deterministic:
             return intake.handle(event)
         with database() as db:
@@ -210,6 +219,16 @@ def create_app(db_path, bridge_key, admin_key, extractor=None):
                                (event.community_id, event.sender_id, body))
                 result = {'listing_id': body, 'status': status,
                           'reply': f'Đã gửi BQL duyệt.\nMã tin:\n{body}' if status == 'pending' else 'Đã đánh dấu bán xong.'}
+            elif command == 'xem':
+                from backend.publishing import public_text
+                row = db.execute("SELECT id,title,price_vnd,condition FROM listings WHERE id=? AND community_id=? AND status='approved'",
+                                 (body, event.community_id)).fetchone()
+                if row:
+                    item = dict(row)
+                    item['title'], item['condition'] = public_text(item['title']), public_text(item['condition'])
+                    result = {'listings': [item], 'reply': f"{item['title']}\nGiá: {item['price_vnd']:,}đ\nTình trạng: {item['condition']}\nMã món đồ:\n{item['id']}"}
+                else:
+                    result = {'listings': [], 'reply': 'Tin này chưa được duyệt hoặc không còn bán. Nhắn tim từ khóa để tìm món khác.'}
             elif command == 'tim':
                 terms = normalize(body).split()
                 if not terms:
@@ -256,5 +275,8 @@ def from_environment():
     from backend.ai_text import GeminiTextExtractor
     key, model = os.getenv('GEMINI_API_KEY'), os.getenv('GEMINI_MODEL')
     extractor = GeminiTextExtractor(key, model) if key and model else None
+    group_id = os.getenv('ZALO_GROUP_ID')
+    target = {'group_id': group_id, 'group_name': os.getenv('ZALO_GROUP_NAME', 'Nhóm demo'),
+              'community_id': os.getenv('DEMO_COMMUNITY_ID', 'demo')} if group_id else None
     return create_app(os.getenv('DATABASE_PATH', 'private/market.db'),
-                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'], extractor=extractor)
+                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'], extractor=extractor, group_target=target)
