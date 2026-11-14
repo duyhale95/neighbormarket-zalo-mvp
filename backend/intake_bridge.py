@@ -155,7 +155,12 @@ def create_intake_app(backend_url: str, backend_key: str, intake_key: str,
                 response=call(backend_url.rstrip('/')+'/image-events',json=payload,headers={'X-API-Key':backend_key},timeout=25)
                 data=response.json() if response.status_code==200 else {}
                 reply=data.get('reply') if isinstance(data,dict) else None
-                if not isinstance(reply,str): reply='Chưa lưu được ảnh. Kiểm tra bản nháp, kết nối và cấu hình với BQL.'
+                # Fixed copy per status; never echo backend detail text to the resident.
+                if not isinstance(reply,str): reply={
+                    409:'Chưa lưu ảnh: chỉ nhận ảnh khi bạn đang có bản nháp chưa xác nhận (tối đa 5 ảnh). '
+                        'Tin đã gửi BQL hoặc đã duyệt không bổ sung ảnh được; hãy tạo tin mới nếu cần đăng kèm ảnh.',
+                    422:'Chưa lưu ảnh: chỉ nhận ảnh tĩnh JPEG, PNG hoặc WebP, tối đa 4 MiB.',
+                }.get(response.status_code,'Chưa lưu được ảnh. Kiểm tra bản nháp, kết nối và cấu hình với BQL.')
             except (httpx.HTTPError,ValueError):
                 reply='Chưa xác định được kết quả lưu ảnh. Nhờ BQL kiểm tra trước khi gửi lại.'
             return {'ignored':False,'thread_id':message.thread_id,'reply':reply}

@@ -264,13 +264,24 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             expire_claims(db)
             if not target_group_id:
                 return Response(status_code=204)
-            row = db.execute("""SELECT d.*, l.title, l.condition, l.price_vnd FROM listing_deliveries d
+            # A v1 publisher cannot send parts. Skip parents that have parts instead of
+            # returning 204 for them, otherwise one sold notice blocks every later text job.
+            legacy_only = '' if x_publisher_version == '2' else \
+                'AND NOT EXISTS (SELECT 1 FROM delivery_parts p WHERE p.delivery_id=d.id)'
+            row = db.execute(f"""SELECT d.*, l.title, l.condition, l.price_vnd, l.status AS listing_status FROM listing_deliveries d
                 JOIN listings l ON l.id=d.listing_id AND l.community_id=d.community_id
                 WHERE d.status='queued' AND (l.status='approved' OR (l.status='sold' AND EXISTS
                     (SELECT 1 FROM delivery_parts p WHERE p.delivery_id=d.id AND p.kind='sold_notice' AND p.status='queued')))
-                AND d.target_group_id=?
+                AND d.target_group_id=? {legacy_only}
                 AND d.community_id=? ORDER BY d.rowid LIMIT 1""", (target_group_id, target_community_id)).fetchone()
             if not row:
+                return Response(status_code=204)
+            # Re-check privacy/prohibited rules at claim time on BOTH paths: rules may
+            # tighten after approval. Sold notices carry no seller text and still go out.
+            if row['listing_status'] == 'approved' and BLOCKING_FLAGS.intersection(moderation_flags(row['title'], row['condition'])):
+                db.execute("UPDATE delivery_parts SET status='failed', last_error='sensitive_information' WHERE delivery_id=? AND status='queued'", (row['id'],))
+                db.execute("UPDATE listing_deliveries SET status='failed', last_error='sensitive_information', updated_at=CURRENT_TIMESTAMP WHERE id=?", (row['id'],))
+                if parts.has_parts(db, row['id']): parts.sync(db, row['id'])
                 return Response(status_code=204)
             if x_publisher_version=='2' and not parts.has_parts(db,row['id']):
                 listing=db.execute('SELECT * FROM listings WHERE id=?',(row['listing_id'],)).fetchone()
@@ -280,9 +291,6 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 return parts.claim(db,row,listing,x_publisher_version)
             if row['snapshot_token'] and row['snapshot_token']!=images.review_token(db,row['listing_id']):
                 db.execute("UPDATE listing_deliveries SET status='failed',last_error='stale_snapshot' WHERE id=?",(row['id'],))
-                return Response(status_code=204)
-            if BLOCKING_FLAGS.intersection(moderation_flags(row['title'], row['condition'])):
-                db.execute("UPDATE listing_deliveries SET status='failed', last_error='sensitive_information', updated_at=CURRENT_TIMESTAMP WHERE id=?", (row['id'],))
                 return Response(status_code=204)
             token = secrets.token_urlsafe(32)
             db.execute("""UPDATE listing_deliveries SET status='claimed', attempts=attempts+1,
@@ -303,7 +311,14 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             expire_claims(db)
-            if parts.has_parts(db,delivery_id): return parts.ack(db,delivery_id,request)
+            if parts.has_parts(db,delivery_id):
+                parent = db.execute('SELECT * FROM listing_deliveries WHERE id=?', (delivery_id,)).fetchone()
+                # A late v1 retry of the original ACK after sold added parts: replay, don't 409.
+                if (request.part_id is None and parent['claim_token'] and request.sent_message_id
+                        and parent['sent_message_id'] == request.sent_message_id
+                        and hmac.compare_digest(parent['claim_token'], request.claim_token)):
+                    return {'delivery_id': delivery_id, 'status': 'sent'}
+                return parts.ack(db,delivery_id,request)
             row = require_claim(db, delivery_id, request.claim_token)
             if row['status'] == 'sent' and row['sent_message_id'] == request.sent_message_id:
                 return {'delivery_id': delivery_id, 'status': 'sent'}

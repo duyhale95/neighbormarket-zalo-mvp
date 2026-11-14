@@ -90,8 +90,13 @@ class DeliveryParts:
         try:
             with path.open('xb') as stream: stream.write(image['data'])
         except FileExistsError:
+            # Re-validate: the existing entry may have been swapped for a link meanwhile.
+            if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()):
+                raise ValueError('Unsafe media path')
             if hashlib.sha256(path.read_bytes()).hexdigest()!=part['image_digest']: raise ValueError('Export changed')
-        return str(path.resolve())
+        resolved=path.resolve()
+        if not resolved.is_relative_to(self.root.resolve()): raise ValueError('Unsafe media path')
+        return str(resolved)
 
     def claim(self, db, parent, listing, version: str):
         if version!='2': return Response(status_code=204)
@@ -140,8 +145,10 @@ class DeliveryParts:
         return {'delivery_id':delivery_id,'status':self.sync(db,delivery_id)}
 
     def reconcile(self, db, delivery_id: str, request) -> dict:
+        # BQL must name the exact part it verified; a parent-level decision is ambiguous.
+        if not request.part_id: raise HTTPException(422,'Multipart delivery: record the part_id that was verified')
         rows=list(db.execute("SELECT * FROM delivery_parts WHERE delivery_id=? AND status='unknown'",(delivery_id,)))
-        if len(rows)!=1 or (request.part_id and rows[0]['id']!=request.part_id): raise HTTPException(409,'No unique unknown part to reconcile')
+        if len(rows)!=1 or rows[0]['id']!=request.part_id: raise HTTPException(409,'No unique unknown part to reconcile')
         part=rows[0]; sent=request.decision=='sent'
         if sent and not request.sent_message_id: raise HTTPException(422,'Record the observed message ID for this part')
         db.execute("UPDATE delivery_parts SET status=?,sent_message_id=?,claim_token=NULL,transport_mode='manual',last_error=? WHERE id=?",
