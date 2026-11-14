@@ -2,6 +2,29 @@
 
 Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua dashboard.
 
+## Bắt đầu chạy backend MVP
+
+Đã có backend local cho tạo nháp, xác nhận, BQL duyệt/từ chối, tìm tin và báo đã bán. Đây là nền nghiệp vụ độc lập; chưa phải demo Zalo end-to-end. Không cần Supabase hoặc Gemini key để chạy các bước thử bên dưới.
+
+Yêu cầu Python 3.11+ và PowerShell 7 cho script khởi động.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+pwsh -File .\run-local.ps1
+```
+
+Mở [API thử nghiệm local](http://127.0.0.1:8000/docs). Script tạo hai khóa thử khác nhau trong `private/local-config.json` (đã gitignore). Điền `bridge_key` ở ô `x-api-key` khi gọi `/events`, `admin_key` khi gọi API xem/duyệt tin. Không gửi khóa vào chat hoặc GitHub. API docs là công cụ thử, chưa phải dashboard BQL.
+
+Đọc [hướng dẫn thử và hợp đồng tích hợp](docs/integration.md), [brief/PRD và UI flow](docs/brief-prd.md), [kế hoạch triển khai](docs/superpowers/plans/2026-11-14-marketplace-backend.md).
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Trạng thái: SQLite, lệnh text xác định và tìm kiếm từ khóa; chưa có AI extraction, xử lý ảnh, Supabase/pgvector, login BQL hoặc deploy VPS.
+
 ## Đã làm
 - Chốt hướng MVP trên Zalo cá nhân, sử dụng Deplao và Gemini.
 - Tạo trợ lý Meo Meo và workflow nhận tin → Gemini → trả lời.
@@ -9,8 +32,8 @@ Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua d
 - Chuẩn bị workflow trả lời tin nhắn văn bản riêng, không cần lệnh /chat.
 
 ## Đang làm
-- Viết project brief và PRD cho MVP.
-- Thiết kế UI flow cho người mua, người bán và Ban Quản lý.
+- Đã có bản brief/PRD và UI flow đầu tiên trong docs; tiếp tục lấy phản hồi.
+- Tiếp theo: nối backend với workflow, AI extraction và dashboard BQL.
 - Kiểm tra nhận tin và phản hồi tự động qua Zalo.
 
 ## Đang vướng
@@ -31,4 +54,4 @@ Workflow chỉ nhận tin nhắn văn bản trong chat riêng và bỏ qua tin t
 ## Nguồn tham khảo
 - [Deplao Builder](https://github.com/babyvibe/deplao-builder)
 
-Repo gồm tài liệu tiến độ và cấu hình mẫu; không chứa API key, cookie hoặc dữ liệu hội thoại.
+Repo gồm backend local, kiểm thử, tài liệu tiến độ và cấu hình mẫu; không chứa API key thật, cookie hoặc dữ liệu hội thoại thật.
