@@ -32,7 +32,7 @@
 ## Task 2: Hướng dẫn tích hợp và vận hành local
 - [x] Viết cấu hình môi trường mẫu không có khóa thật, README và hợp đồng sự kiện.
 - [x] Smoke test HTTP thật trên localhost; không gửi Zalo.
-- [ ] Commit và push branch lên repo GitHub đã được yêu cầu.
+- [x] Commit và push branch lên repo GitHub đã được yêu cầu; PR #1 đã mở, chưa merge.
 
 ## Bằng chứng kiểm tra
 - 6 unittest pass: lifecycle, phân quyền/khu, trùng sự kiện, từ chối, đầu vào, khóa riêng.
