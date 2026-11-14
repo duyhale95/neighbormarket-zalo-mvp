@@ -95,7 +95,7 @@ snippets upstream: keep its local logs/exports private; do not upload them.
    no resend after ACK loss, graph schema and secret output confinement.
 4. [x] P3: typed moderation report, rules + optional advisory model signals;
    additive migration and mandatory review/recheck at publication boundary.
-5. [ ] P2: one persistent sender/community conversation, grounded Vietnamese
+5. [x] P2: one persistent sender/community conversation, grounded Vietnamese
    parsing, clarification/edit/cancel/confirm, revision checks around AI calls.
 6. [ ] P7: full offline mentor demo and security/concurrency regressions.
 7. [ ] P5: optional report/source fields in Zod and current BQL details; no
@@ -109,6 +109,14 @@ publisher and moderation tests. No outbound network/model call in these tests.
 The model moderation layer reuses optional extraction risk signals; there is no
 separate paid moderation request or calibrated score. Live send exceptions halt
 the Deplao graph and become unknown on lease expiry (documented engine limit).
+
+P2 verification: 58/58 backend tests pass. Natural demo text, restart-persistent
+clarification, sender/community isolation, edit/cancel/confirm and legacy
+commands pass. A blocked model call permits a concurrent cancellation and its
+late result is rejected by the stored revision. OpenAI remains the only cloud
+provider; deterministic Vietnamese patterns run offline when disabled or failed.
+No Gemini/stub provider is silently selected. Incomplete context has no listing
+record; cancelled complete drafts remain as private `cancelled` records.
 
 Each implementation step is tested before and after the change. Final evidence
 and any deviations are recorded here and in MENTOR_LIVE_DEMO.md. Real listener,

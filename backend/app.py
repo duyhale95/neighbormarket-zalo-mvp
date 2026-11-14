@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, ValidationError
 import httpx
 
 from backend.ai import ListingExtraction, extract_listing
+from backend.conversation import HELP, clear_context, deterministic_patch, draft_action, parse_action, snapshot
 from backend.moderation import BLOCKING_FLAGS, assess_listing, moderation_flags
 
 audit_logger = logging.getLogger('neighbormarket.audit')
@@ -116,6 +117,12 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 delivery_id TEXT NOT NULL, decision TEXT NOT NULL, reason TEXT NOT NULL,
                 reviewer TEXT NOT NULL DEFAULT 'admin-key',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS conversations (
+                community_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+                listing_id TEXT, data TEXT NOT NULL DEFAULT '{}',
+                revision INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(community_id, sender_id)
             );
             CREATE INDEX IF NOT EXISTS listings_scope ON listings(community_id, status);
         ''')
@@ -313,16 +320,16 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
         event_digest = hashlib.sha256(event.event_id.encode('utf-8')).hexdigest()
         identity = (event.community_id, event.sender_id, event.event_id)
         text = event.text.strip()
-        command, _, body = text.partition(' ')
-        command = normalize(command)
-        body = body.strip()
+        command, body = parse_action(text)
         # Check the replay cache before network access, then recheck under the write lock.
         with database() as db:
             cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()
+            context_snapshot = snapshot(db, (event.community_id, event.sender_id))
         if cached:
             return json.loads(cached['response'])
         extracted = None
-        if command not in ('ban', 'xacnhan', 'daban', 'tim'):
+        ai_status, model_version = 'not_requested', 'rules-only'
+        if command not in ('ban', 'xacnhan', 'daban', 'tim', 'huy', 'edit_price', 'edit_title'):
             ai_active = os.getenv('AI_ENABLED', '').lower() in ('1', 'true', 'yes') and bool(os.getenv('OPENAI_API_KEY', '').strip())
             started = time.monotonic()
             try:
@@ -338,46 +345,27 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 audit('ai_extraction', event_id=event_digest, correlation_id=event_digest,
                       model=model, latency_ms=round((time.monotonic() - started) * 1000),
                       result='extracted' if extracted else 'fallback')
+                ai_status = 'advisory' if extracted else 'unavailable'
+                model_version = model
+            if extracted is None:
+                extracted = deterministic_patch(text, context_snapshot['data'])
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()
             if cached:
                 return json.loads(cached['response'])
-            if command == 'ban' or (extracted and extracted.intent == 'sell'):
-                if command == 'ban':
-                    parts = [p.strip() for p in body.split('|')]
-                    if len(parts) != 3 or not all(parts) or not parts[1].isascii() or not parts[1].isdigit():
-                        raise HTTPException(422, 'Dùng: ban Tên món | Giá nguyên VND | Tình trạng')
-                    title, price, condition = parts
-                    price = int(price)
-                    missing = []
-                else:
-                    title = (extracted.title or '').strip()
-                    price = extracted.price_vnd
-                    condition = (extracted.condition or '').strip()
-                    missing = set(extracted.missing_fields)
-                    if not title: missing.add('title')
-                    if price is None: missing.add('price_vnd')
-                    if not condition: missing.add('condition')
-                if missing:
-                    labels = {'title': 'tên sản phẩm', 'price_vnd': 'giá', 'condition': 'tình trạng'}
-                    needed = ', '.join(labels[field] for field in ('title', 'price_vnd', 'condition') if field in missing)
-                    result = {'reply': f'Bạn vui lòng cung cấp {needed}. Hãy gửi lại đầy đủ tên sản phẩm, giá VND và tình trạng.'}
-                else:
-                    if len(title) > 250 or len(condition) > 500 or not 0 <= price <= 1_000_000_000:
-                        raise HTTPException(422, 'Tên, tình trạng hoặc giá vượt giới hạn')
-                    report = assess_listing(title, condition, price, ai_flags=bool(extracted and extracted.risk_flags),
-                        model_version=os.getenv('OPENAI_MODEL', 'gpt-4o-mini') if extracted else 'rules-only',
-                        ai_status='advisory' if extracted else 'not_requested')
-                    flags = report.categories
-                    id = 'NM-' + uuid4().hex[:12].upper()
-                    db.execute('INSERT INTO listings(id,community_id,seller_id,title,price_vnd,condition,status,moderation_flags) VALUES (?,?,?,?,?,?,?,?)',
-                               (id, event.community_id, event.sender_id, title, price, condition, 'draft', json.dumps(flags)))
-                    db.execute('UPDATE listings SET moderation_report=?, source_channel=? WHERE id=?',
-                               (report.model_dump_json(), event.source_channel, id))
-                    result = {'listing_id': id, 'status': 'draft',
-                              'reply': f'Bản nháp {id}: {title}, {price:,}đ, {condition}. Nhắn xacnhan {id} để gửi BQL duyệt.'}
+            result = draft_action(db, event, command, body, extracted, context_snapshot['revision'],
+                                  ai_status=ai_status, model_version=model_version)
+            flags = []
+            if result is not None:
+                if result.get('status') == 'draft':
+                    saved = db.execute('SELECT moderation_flags FROM listings WHERE id=?', (result['listing_id'],)).fetchone()
+                    flags = json.loads(saved['moderation_flags'])
             elif command in ('xacnhan', 'daban'):
+                if command == 'xacnhan' and not body:
+                    body = snapshot(db, (event.community_id, event.sender_id))['listing_id']
+                    if not body:
+                        raise HTTPException(409, 'Chưa có bản nháp đầy đủ. Hãy bổ sung thông tin hoặc nêu mã tin.')
                 row = db.execute('SELECT * FROM listings WHERE id=? AND community_id=? AND seller_id=?',
                                  (body, event.community_id, event.sender_id)).fetchone()
                 if not row:
@@ -392,6 +380,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                         raise HTTPException(409, 'Tin đang gửi hoặc cần BQL đối soát trước khi báo đã bán')
                     db.execute("UPDATE listing_deliveries SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE listing_id=? AND status='queued'", (body,))
                 db.execute('UPDATE listings SET status=? WHERE id=?', (status, body))
+                clear_context(db, (event.community_id, event.sender_id), body)
                 result = {'listing_id': body, 'status': status,
                           'reply': 'Đã gửi BQL duyệt.' if status == 'pending' else 'Đã đánh dấu bán xong.'}
             elif command == 'tim':
@@ -399,11 +388,11 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 if not terms:
                     raise HTTPException(422, 'Nhập từ khóa sau tim')
                 rows = db.execute("SELECT id,title,price_vnd,condition FROM listings WHERE community_id=? AND status='approved' ORDER BY rowid DESC", (event.community_id,))
-                found = [dict(r) for r in rows if 'sensitive_information' not in moderation_flags(r['title'], r['condition'])
+                found = [dict(r) for r in rows if not BLOCKING_FLAGS.intersection(moderation_flags(r['title'], r['condition']))
                          and all(term in normalize(r['title'] + ' ' + r['condition']) for term in terms)][:5]
                 result = {'listings': found, 'reply': '\n'.join(f"{r['id']} — {r['title']} — {r['price_vnd']:,}đ" for r in found) or 'Chưa có tin phù hợp đã được duyệt.'}
             else:
-                result = {'reply': 'Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh.'}
+                result = {'reply': HELP}
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
             db.commit()
             audit('event', event_id=event_digest, correlation_id=event_digest,
