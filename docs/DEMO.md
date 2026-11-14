@@ -2,7 +2,16 @@
 
 ## Phạm vi đã kiểm chứng
 
-Bộ kiểm thử chạy toàn bộ nghiệp vụ với HTTP in-process và bộ gửi nhóm giả lập. Chưa có bằng chứng tin nhắn Zalo thật kích hoạt Deplao, tới backend và được gửi vào nhóm Legit. Không có workflow marketplace importable đã được xác thực; workflow Gemini có sẵn là chatbot độc lập, không kết nối các API marketplace. Không đưa token, cookie, khóa hoặc hội thoại thực vào repository hay demo.
+Live hiện bị khóa vì engine Deplao source đã khảo sát có fallback account.
+Xem [DEPLAO_COMPATIBILITY.md](DEPLAO_COMPATIBILITY.md) để review patch strict
+binding và kiểm chứng bản cài trước khi sinh/bật workflow. Demo offline vẫn chạy.
+
+Bộ kiểm thử chạy toàn bộ nghiệp vụ với HTTP in-process và bộ gửi nhóm giả lập. Chưa có bằng chứng tin nhắn Zalo thật kích hoạt Deplao, tới backend và được gửi vào nhóm Legit. Generator mới tạo workflow marketplace theo schema source đã kiểm tra, nhưng chưa import/nghiệm thu trên ứng dụng Deplao đang cài. Workflow Gemini có sẵn là chatbot độc lập, không kết nối các API marketplace và phải tắt khi dùng intake mới. Không đưa token, cookie, khóa hoặc hội thoại thực vào repository hay demo.
+
+Kịch bản tích hợp mới, checklist live và các lệnh Windows đầy đủ nằm trong
+[MENTOR_LIVE_DEMO.md](MENTOR_LIVE_DEMO.md). Chạy nhanh năm cảnh offline:
+`.\.venv\Scripts\python.exe -m tools.offline_demo`. Kết quả `sent` có mode `mock`
+chỉ là ACK mô phỏng; không phải bằng chứng gửi Zalo.
 
 ## 1. Chuẩn bị trên Windows
 
@@ -23,7 +32,7 @@ Giữ cửa sổ đang chạy mở và truy cập http://127.0.0.1:8000/docs. `r
 
 ### AI tùy chọn
 
-Mặc định AI tắt; toàn bộ demo dưới đây dùng lệnh xác định và không cần API trả phí. Nếu chủ tài khoản đã chủ động cấu hình OpenAI, thiết lập `AI_ENABLED=true`, `OPENAI_API_KEY` và `OPENAI_MODEL` trong môi trường trước khi chạy backend. Không ghi khóa vào file commit hoặc tài liệu. Khi thiếu khóa hoặc dịch vụ lỗi, bot hướng dẫn dùng các lệnh xác định; AI chỉ trích xuất, không tự duyệt hay đăng nhóm. Xử lý thiếu dữ liệu yêu cầu người dùng gửi lại đủ thông tin; chưa có hội thoại nhiều lượt để ghép dữ liệu.
+Mặc định AI tắt; demo không cần API trả phí. Nếu chủ tài khoản chủ động cấu hình OpenAI, thiết lập `AI_ENABLED=true`, `OPENAI_API_KEY` và `OPENAI_MODEL` trước khi chạy backend. Không ghi khóa vào file commit hoặc tài liệu. Khi thiếu khóa hoặc dịch vụ lỗi, backend dùng mẫu tiếng Việt giới hạn và lệnh xác định; AI chỉ trích xuất, không tự duyệt hay đăng nhóm. Hội thoại giữ thông tin còn thiếu theo người/khu, hỗ trợ bổ sung, `ok`/`xác nhận`, `hủy`, `sửa giá 700k`, `sửa tiêu đề ...`. Giá/tình trạng không được tự bịa; đổi món phải hủy ngữ cảnh cũ trước.
 
 ## 2. Chạy demo tự động không gửi Zalo
 

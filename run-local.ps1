@@ -29,6 +29,17 @@ $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
 $env:BRIDGE_API_KEY = $config.bridge_key
 $env:ADMIN_API_KEY = $config.admin_key
 $env:DATABASE_PATH = Join-Path $PSScriptRoot 'private/market.db'
+$channelPath = Join-Path $PSScriptRoot 'private/zalo-channel.json'
+if (Test-Path -LiteralPath $channelPath) {
+    $channel = Get-Content -LiteralPath $channelPath -Raw | ConvertFrom-Json
+    if ($channel.group_id -notmatch '^[0-9]{1,100}$' -or
+        [string]::IsNullOrWhiteSpace($channel.community_id) -or
+        ($channel.policy_validated -isnot [bool]) -or -not $channel.policy_validated) {
+        throw 'Invalid/unvalidated trusted channel configuration. Check private/zalo-channel.json.'
+    }
+    $env:ZALO_LEGIT_GROUP_ID = $channel.group_id
+    $env:ZALO_COMMUNITY_ID = $channel.community_id
+}
 # Group, community and optional AI settings are inherited from the caller.
 if ([string]::IsNullOrWhiteSpace($env:ZALO_LEGIT_GROUP_ID)) {
     Write-Warning 'No group configured: approved listings will not create delivery jobs. Set ZALO_LEGIT_GROUP_ID before starting.'

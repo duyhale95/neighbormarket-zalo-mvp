@@ -1,5 +1,31 @@
 # NeighborMarket AI — Zalo Legit MVP
 
+## Partner workflow integration
+
+Nhánh `feat/integrate-partner-zalo-workflow` bổ sung adapter Deplao text an toàn,
+generator intake/publisher giữ file có khóa trong `private/`, hội thoại nháp có
+hỏi bổ sung/sửa/hủy, moderation có lý do và nhãn nguồn/ACK trên BQL. Backend,
+database, lifecycle và đăng nhập BQL hiện có tiếp tục là nguồn dữ liệu chính.
+
+Chạy demo toàn bộ **không gửi Zalo, không gọi AI trả phí**:
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.offline_demo
+```
+
+Kết quả ghi rõ `SIMULATED — NO REAL ZALO`, `transport_mode=mock`. Đọc
+[kịch bản mentor, startup Windows, import Deplao và checklist live](docs/MENTOR_LIVE_DEMO.md)
+và [mapping/decision log của ba nguồn](docs/PARTNER_INTEGRATION_PLAN.md).
+**Chưa xác minh listener/PM/đăng nhóm trên Deplao cài tại máy.** Import workflow
+không tự bind tài khoản. **Live hiện bị khóa:** engine Deplao đã khảo sát có
+fallback sang account khác. Generator yêu cầu source đã sửa strict binding và
+operator xác minh đúng bản đang chạy; xem [compatibility gate](docs/DEPLAO_COMPATIBILITY.md).
+Không bật workflow cũ để bỏ qua kiểm tra này. Chỉ thử live sau khi kiểm tra
+chính sách, account và nhóm.
+Không chạy partner Bot Platform poller cùng Meo Meo; token đó khác session Deplao.
+Mọi tin vẫn phải được người bán xác nhận và BQL duyệt. Ảnh được hoãn, không có
+tải ảnh hay AI hiểu ảnh trong nhánh này. Xem [attribution MIT](THIRD_PARTY_NOTICES.md).
+
 ## Golden Sunrise frontend & BQL UI
 
 Giao diện Next.js nằm trong `frontend/`: landing page `/`, đăng nhập `/bql/login`,
@@ -22,7 +48,7 @@ và MLOps chỉ là mục “Đang phát triển”.
 
 Backend chợ cư dân cho phép tạo bản nháp qua tin nhắn riêng, xác nhận, BQL duyệt, tìm tin và đánh dấu đã bán. Với nhóm đã cấu hình, việc duyệt tạo job đăng nhóm trong SQLite; bridge claim, báo kết quả gửi và cho phép BQL đối soát khi kết quả chưa rõ.
 
-**Trạng thái demo:** luồng từ intake đến bài đăng nhóm và tìm kiếm đã được kiểm thử bằng HTTP và bộ gửi giả lập. Chưa có bằng chứng Deplao nhận PM thật và nối với backend, hoặc Meo Meo đăng được vào nhóm Legit. Workflow Gemini cũ chạy độc lập; chưa có workflow marketplace importable đã xác minh. Xem [kịch bản demo và giới hạn](docs/DEMO.md).
+**Trạng thái demo:** luồng từ intake đến bài đăng nhóm và tìm kiếm đã được kiểm thử bằng HTTP và bộ gửi giả lập. Chưa có bằng chứng Deplao nhận PM thật và nối với backend, hoặc Meo Meo đăng được vào nhóm Legit. Đã có generator workflow importable đối chiếu source; chưa nghiệm thu trên ứng dụng Deplao đang cài. Workflow Gemini cũ chạy độc lập và phải tắt khi bật intake mới. Xem [kịch bản demo và giới hạn](docs/DEMO.md).
 
 ## Chạy trên Windows
 

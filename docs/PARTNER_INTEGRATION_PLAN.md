@@ -97,10 +97,10 @@ snippets upstream: keep its local logs/exports private; do not upload them.
    additive migration and mandatory review/recheck at publication boundary.
 5. [x] P2: one persistent sender/community conversation, grounded Vietnamese
    parsing, clarification/edit/cancel/confirm, revision checks around AI calls.
-6. [ ] P7: full offline mentor demo and security/concurrency regressions.
+6. [x] P7: full offline mentor demo and security/concurrency regressions.
 7. [ ] P5: optional report/source fields in Zod and current BQL details; no
    landing or authentication redesign. Check old schemas and HTTP suite.
-8. [ ] P6: text only; attachments explicitly unsupported, no remote fetch.
+8. [x] P6: deliberately deferred; text only, attachments unsupported, no remote fetch.
 9. [ ] P8: review, docs/config, baseline/regression/build checks, secret scan,
    logical commits, push only feat/integrate-partner-zalo-workflow.
 
@@ -122,3 +122,30 @@ Each implementation step is tested before and after the change. Final evidence
 and any deviations are recorded here and in MENTOR_LIVE_DEMO.md. Real listener,
 PM reply, group rights and send receipt remain **unverified** until an operator
 performs the separate live checklist. A simulator ACK is always labelled mock.
+
+## Review fixes and checkpoint evidence
+
+A separate read-only integration review found four important issues, all fixed
+with regression coverage: negated conditions must preserve their meaning; an AI
+`other` response must not discard deterministic clarification; Deplao structured
+message parsing must not interpret seller JSON/image URLs; and account fallback
+must fail closed. The first three have backend/generator fixes. For the fourth,
+live graph generation is blocked on unpatched/unknown Deplao engines. The small
+unapplied strict-binding patch and exact source check are documented in
+DEPLAO_COMPATIBILITY.md. The installed application has not been modified or
+verified. Source hash success is not live evidence.
+
+Checkpoint checks: **70/70 backend tests**, **6/6 frontend unit tests**, **27/27
+production HTTP BFF integration checks**, TypeScript, ESLint and formatting pass.
+The Windows PowerShell 5.1 and PowerShell 7 launchers were each tested in a
+disposable directory with synthetic keys/database, actual ports 8000/8001, raw
+intake/replay/confirmation/admin review, allowlisted queued delivery, private
+workflow generation and no overwrite. The source patch applies cleanly to an
+isolated copy and yields the expected accepted hash; stock source is refused.
+No source checkout or installed Deplao was patched. No real Zalo/model request.
+
+The user subsequently requested phase checkpoints on
+`feat/vinhomes-sunrise-landing-bql-ui`. This explicitly overrides the earlier
+push-only integration-branch restriction for checkpoints. Development continues
+on `feat/integrate-partner-zalo-workflow`; checkpoint pushes use fast-forward
+only, preserving teammate work and the recorded original base SHA.
