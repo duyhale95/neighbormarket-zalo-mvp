@@ -6,11 +6,12 @@ import time
 from uuid import uuid4
 from fastapi import HTTPException
 from backend.ai_text import AIUnavailable, ListingPatch
+from backend.messages import draft_message, help_message
 
 FIELDS = ('title', 'price_vnd', 'condition')
 QUESTIONS = {'title': 'Bạn muốn bán món đồ gì?', 'price_vnd': 'Bạn muốn bán với giá bao nhiêu?',
              'condition': 'Món đồ đã dùng bao lâu, có hư hỏng gì không?'}
-HELP = 'Bạn có thể nhắn: Mình muốn thanh lý ghế 500k. Nếu muốn đổi món, nhắn huy nhap trước. Tìm mua hiện dùng: tim từ khóa.'
+HELP = help_message()
 
 
 class NaturalIntake:
@@ -94,14 +95,14 @@ class NaturalIntake:
                 db.execute('INSERT INTO current_drafts VALUES (?,?,?) ON CONFLICT(community_id,sender_id) DO UPDATE SET listing_id=excluded.listing_id',
                            (*scope, id))
                 if missing:
-                    result = {'listing_id': id, 'status': 'incomplete', 'missing_fields': missing, 'reply': QUESTIONS[missing[0]]}
+                    result = {'listing_id': id, 'status': 'incomplete', 'missing_fields': missing,
+                              'reply': draft_message({'id':id,**values},missing,QUESTIONS[missing[0]])}
                 else:
                     db.execute('INSERT INTO listings(id,community_id,seller_id,title,price_vnd,condition,status) VALUES (?,?,?,?,?,?,?) '
                                'ON CONFLICT(id) DO UPDATE SET title=excluded.title,price_vnd=excluded.price_vnd,condition=excluded.condition',
                                (id, *scope, values['title'], values['price_vnd'], values['condition'], 'draft'))
                     result = {'listing_id': id, 'status': 'draft', 'missing_fields': [],
-                              'reply': f"Bản nháp:\n{values['title']}\nGiá: {values['price_vnd']:,}đ\nTình trạng: {values['condition']}\nMã tin:\n{id}\n"
-                                       "Bạn kiểm tra và nhắn xác nhận để gửi BQL duyệt. Muốn bỏ bản nháp, nhắn huy nhap."}
+                              'reply': draft_message({'id':id,**values})}
             if time.monotonic() > deadline - .5:
                 raise HTTPException(503, 'Xử lý quá thời gian. Bạn thử lại sau nhé.')
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))

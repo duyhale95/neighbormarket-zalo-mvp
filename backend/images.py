@@ -20,6 +20,7 @@ from PIL import Image, ImageOps
 from fastapi import Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
+from backend.messages import image_message, error_message
 
 _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='image-safety')
 MAX_BYTES = 4 * 1024 * 1024
@@ -246,8 +247,7 @@ class ImageStore:
         try:raw=fetch_zalo(url)
         except ValueError as error:raise HTTPException(422,str(error)) from None
         result=self.upload(listing_id,community,raw,seller=sender)
-        reply='Đã nhận ảnh và kiểm tra an toàn sơ bộ; BQL vẫn sẽ duyệt tin.' if result['status']=='clear' else 'Đã nhận ảnh. Ảnh cần BQL kiểm tra thủ công trước khi được duyệt.'
-        result={**result,'listing_id':listing_id,'reply':reply+' Bạn tiếp tục bổ sung thông tin còn thiếu hoặc nhắn xác nhận khi bản nháp đầy đủ.'}
+        result={**result,'listing_id':listing_id,'reply':image_message(listing_id,result['status'])}
         with self.database(timeout=1) as db:
             db.execute('INSERT OR IGNORE INTO image_events VALUES (?,?,?,?)',(*identity,json.dumps(result,ensure_ascii=False)))
         return result
@@ -290,4 +290,4 @@ class ImageStore:
                 import os
                 return await run_in_threadpool(self.receive_zalo,url,os.getenv('DEMO_COMMUNITY_ID','demo'),sender,event_id)
             except (HTTPException,ValueError,UnicodeDecodeError) as error:
-                return {'reply':str(error.detail) if isinstance(error,HTTPException) else 'Chưa nhận được ảnh hợp lệ. Bạn thử lại nhé.','business_status':getattr(error,'status_code',422)}
+                return {'reply':error_message(str(error.detail) if isinstance(error,HTTPException) else 'Chưa nhận được ảnh hợp lệ. Bạn thử lại nhé.'),'business_status':getattr(error,'status_code',422)}

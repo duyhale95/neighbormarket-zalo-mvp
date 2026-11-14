@@ -14,6 +14,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from backend.messages import draft_message, pending_message, sold_message, search_message, item_message, help_message, error_message
 
 
 class Event(BaseModel):
@@ -183,7 +184,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
                                (previous['listing_id'], event.community_id, event.sender_id))
                 db.execute('DELETE FROM conversations WHERE community_id=? AND sender_id=?', (event.community_id, event.sender_id))
                 db.execute('DELETE FROM current_drafts WHERE community_id=? AND sender_id=?', (event.community_id, event.sender_id))
-                result = {'reply': 'Đã hủy bản nháp hoặc yêu cầu tạo nháp đang xử lý (nếu có). Bạn có thể gửi thông tin món mới.'}
+                result = {'reply': '✅ Đã hủy bản nháp hiện tại\n\nYêu cầu tạo nháp đang xử lý (nếu có) cũng đã được hủy.\n\nBạn có thể gửi thông tin món mới để bắt đầu lại.'}
             elif command == 'ban':
                 parts = [p.strip() for p in body.split('|')]
                 if len(parts) != 3 or not all(parts) or not parts[1].isascii() or not parts[1].isdigit():
@@ -201,13 +202,13 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
                 db.execute('INSERT INTO current_drafts VALUES (?,?,?) ON CONFLICT(community_id,sender_id) DO UPDATE SET listing_id=excluded.listing_id',
                            (event.community_id, event.sender_id, id))
                 result = {'listing_id': id, 'status': 'draft',
-                          'reply': f'Bản nháp:\n{title}\nGiá: {int(price):,}đ\nTình trạng: {condition}\nMã tin:\n{id}\nNhắn xác nhận để gửi BQL duyệt.'}
+                          'reply': draft_message({'id':id,'title':title,'price_vnd':int(price),'condition':condition})}
             elif command in ('xacnhan', 'daban'):
                 if command == 'daban' and not body:
                     choices = list(db.execute("SELECT id,title FROM listings WHERE community_id=? AND seller_id=? AND status='approved' ORDER BY rowid DESC",
                                               (event.community_id, event.sender_id)))
                     if len(choices) != 1:
-                        result = {'reply': ('Bạn muốn đánh dấu món nào đã bán? Nhắn daban MÃ_TIN:\n' + '\n'.join(f"{x['id']} — {x['title']}" for x in choices[:10])) if choices else 'Bạn chưa có tin đang bán để đánh dấu.'}
+                        result = {'reply': ('📝 Chọn món đã bán\n\n' + '\n\n'.join(f"Tên món: {x['title']}\nMã món đồ:\n{x['id']}" for x in choices[:10])+'\n\nGửi: đã bán MÃ_TIN') if choices else 'ℹ Chưa có món đang bán\n\nBạn chưa có tin đã duyệt và còn bán để đánh dấu.'}
                         db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
                         return result
                     body = choices[0]['id']
@@ -230,7 +231,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
                     raise HTTPException(404, 'Listing not found')
                 required, status = ('draft', 'pending') if command == 'xacnhan' else ('approved', 'sold')
                 if row['status'] != required:
-                    raise HTTPException(409, 'Listing is not in the required state')
+                    raise HTTPException(409, 'Tin không ở trạng thái phù hợp. Bạn kiểm tra xem tin đã được xác nhận hoặc đã bán chưa nhé.')
                 db.execute('UPDATE listings SET status=? WHERE id=?', (status, body))
                 if status == 'sold':
                     publisher.enqueue_sold(db, {**dict(row), 'status': status})
@@ -240,7 +241,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
                     db.execute('DELETE FROM current_drafts WHERE community_id=? AND sender_id=? AND listing_id=?',
                                (event.community_id, event.sender_id, body))
                 result = {'listing_id': body, 'status': status,
-                          'reply': f'Đã gửi BQL duyệt.\nMã tin:\n{body}' if status == 'pending' else 'Đã đánh dấu bán xong.'}
+                          'reply': pending_message(dict(row)) if status == 'pending' else sold_message(dict(row))}
             elif command == 'xem':
                 from backend.publishing import public_text
                 row = db.execute("SELECT id,title,price_vnd,condition FROM listings WHERE id=? AND community_id=? AND status='approved'",
@@ -248,18 +249,21 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
                 if row:
                     item = dict(row)
                     item['title'], item['condition'] = public_text(item['title']), public_text(item['condition'])
-                    result = {'listings': [item], 'reply': f"{item['title']}\nGiá: {item['price_vnd']:,}đ\nTình trạng: {item['condition']}\nMã món đồ:\n{item['id']}"}
+                    result = {'listings': [item], 'reply': item_message(item,'Đang bán')}
                 else:
-                    result = {'listings': [], 'reply': 'Tin này chưa được duyệt hoặc không còn bán. Nhắn tim từ khóa để tìm món khác.'}
+                    result = {'listings': [], 'reply': 'ℹ Chưa thể xem món này\n\nTin chưa được duyệt hoặc không còn bán.\n\nBạn có thể tìm món khác, ví dụ:\ntìm ghế'}
             elif command == 'tim':
                 terms = normalize(body).split()
                 if not terms:
                     raise HTTPException(422, 'Nhập từ khóa sau tim')
                 rows = db.execute("SELECT id,title,price_vnd,condition FROM listings WHERE community_id=? AND status='approved' ORDER BY rowid DESC", (event.community_id,))
                 found = [dict(r) for r in rows if all(term in normalize(r['title'] + ' ' + r['condition']) for term in terms)][:5]
-                result = {'listings': found, 'reply': '\n'.join(f"{r['id']} — {r['title']} — {r['price_vnd']:,}đ" for r in found) or 'Chưa có tin phù hợp đã được duyệt.'}
+                from backend.publishing import public_text
+                for item in found:
+                    item['title'],item['condition']=public_text(item['title']),public_text(item['condition'])
+                result = {'listings': found, 'reply': search_message(found)}
             else:
-                result = {'reply': 'Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh hoặc AI tự do.'}
+                result = {'reply': help_message(natural=bool(intake))}
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
             return result
 
@@ -288,7 +292,7 @@ def create_app(db_path, bridge_key, admin_key, extractor=None, group_target=None
             # Business errors become safe user-facing replies; auth never enters here.
             replies = {404:'Không tìm thấy tin thuộc quyền của bạn. Hãy kiểm tra mã tin.'}
             return {'business_status':error.status_code,
-                    'reply':replies.get(error.status_code, str(error.detail))}
+                    'reply':error_message(replies.get(error.status_code, str(error.detail)))}
 
     return app
 

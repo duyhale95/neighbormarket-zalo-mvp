@@ -5,6 +5,7 @@ import time
 from uuid import uuid4
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
+from backend.messages import group_message, sold_message
 
 
 class QueueRequest(BaseModel):
@@ -23,12 +24,7 @@ def public_text(value):
 
 
 def format_post(row):
-    code = row['id']
-    return (f"🛍 TIN ĐÃ ĐƯỢC BQL DUYỆT\n{public_text(row['title'])}\n"
-            f"Giá: {row['price_vnd']:,}đ\nTình trạng: {public_text(row['condition'])}\n\n"
-            f"🔖 MÃ MÓN ĐỒ\n━━━━━━━━━━━━━━━━\n{code}\n━━━━━━━━━━━━━━━━\n"
-            "Mã sẽ được gửi riêng ngay sau bài này để bạn sao chép.\n"
-            "Sao chép mã và nhắn riêng Meo Meo để xem tin còn bán. Không chuyển tiền chỉ dựa vào bài đăng.")
+    return group_message({**dict(row),'title':public_text(row['title']),'condition':public_text(row['condition'])})
 
 
 class GroupPublisher:
@@ -119,7 +115,7 @@ class GroupPublisher:
                 db.execute("UPDATE group_posts SET status='sending',token=?,lease_until=? WHERE id=?", (token, now+180, job['id']))
                 return {'ready': True, 'job_id': job['id'], 'token': token, 'part': job['part'],
                         'group_id': group_id, 'group_name': job['group_name'], 'listing_id': row['id'],
-                        'message': (f"✅ ĐÃ BÁN\n{public_text(row['title'])}\nMã món đồ:\n{row['id']}\nMón này đã ngừng xuất hiện trong tìm kiếm."
+                        'message': (sold_message({**dict(row),'title':public_text(row['title']),'condition':public_text(row['condition'])},group=True)
                                     if job['part'] == 'sold' else format_post(row) if job['part'] == 'post' else row['id'])}
 
         @app.post('/group-publications/{job_id}/ack', dependencies=[Depends(authenticate(bridge_key))])
