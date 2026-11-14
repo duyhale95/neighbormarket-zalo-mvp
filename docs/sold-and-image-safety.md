@@ -33,7 +33,7 @@ Kiểm tra bằng ảnh màu tổng hợp, không dùng ảnh cư dân:
 5. Bot nhận ảnh, kiểm tra an toàn và báo kết quả/chuyển BQL kiểm tra. Sau đó người bán nhắn `xác nhận`.
 6. BQL tải lại dashboard, xem ảnh, nhãn/cờ rồi duyệt hoặc từ chối.
 
-Adapter chỉ nhận URL HTTPS từ `photo-zalo.zadn.vn` hoặc subdomain `zcdn.me`; không follow redirect; DNS phải toàn IP global và kết nối ghim IP đã kiểm tra với TLS host gốc. Có timeout và giới hạn tải. URL/host không hỗ trợ sẽ báo lỗi thay vì truy cập tùy ý. Chưa kiểm chứng URL ảnh thật trên bản cài Deplao sau triển khai; nếu ảnh không vào, xem log node HTTP và không mở rộng allowlist tùy tiện.
+Adapter chỉ nhận URL HTTPS từ `photo-zalo.zadn.vn` hoặc subdomain `zcdn.me` / `photo-stal-N.zdn.vn`; không follow redirect; DNS phải toàn IP global và kết nối ghim IP đã kiểm tra với TLS host gốc. Có timeout và giới hạn tải. URL/host không hỗ trợ sẽ báo lỗi thay vì truy cập tùy ý. Chưa kiểm chứng URL ảnh thật trên bản cài Deplao sau triển khai; nếu ảnh không vào, xem log node HTTP và không mở rộng allowlist tùy tiện.
 
 ### Upload trực tiếp khi thử local
 Trên dashboard, ở tin draft/pending chọn ảnh rồi bấm **Tải ảnh và kiểm tra an toàn**. Có nút **Xem ảnh** và **Kiểm tra ảnh lại**. URL ảnh cần admin key trong header, không public hoặc nhúng key vào URL.
@@ -53,3 +53,6 @@ Chỉ thêm/kiểm tra lại ảnh trước khi tin approved. Không cho thay �
 - UI: upload ảnh, fetch private, chặn duyệt khi chưa xem thủ công, duyệt sau xác nhận, desktop/mobile.
 - Dịch vụ OpenAI thật: ảnh màu tổng hợp đã trả clear bằng key local; không sử dụng khóa đã dán trong chat.
 - Chưa nghiệm thu ảnh thật qua workflow Zalo mới hoặc thông báo sold trên nhóm bằng công cụ. Người dùng thực hiện vòng kiểm tra thật.
+
+## Sửa kết nối CDN thực tế
+Đã quan sát ảnh đến qua photo-stal-30.zdn.vn và photo-stal-7.zdn.vn trong log Deplao. Bổ sung đúng family photo-stal-[0-9]{1,3}.zdn.vn, vẫn giữ IP pin/TLS/no redirects/giới hạn tải. Đã fetch và chuẩn hóa JPEG thành công từ URL ảnh thật; chưa replay để tự gửi kết quả Zalo, người dùng cần gửi lại ảnh.

@@ -67,6 +67,12 @@ class ImageTests(unittest.TestCase):
         for url in ['http://photo.zcdn.me/a','https://127.0.0.1/a','https://evil.com/a','https://photo.zcdn.me.evil.com/a','https://user:pw@photo.zcdn.me/a']:
             with self.assertRaises(ValueError):validate_zalo_url(url)
 
+    def test_observed_zalo_photo_stal_hosts_allowed_without_broad_zdn_access(self):
+        for host in ['photo-stal-30.zdn.vn','photo-stal-7.zdn.vn']:
+            self.assertEqual(validate_zalo_url('https://'+host+'/image.jpg').hostname,host)
+        for host in ['evil.zdn.vn','photo-stal-7.zdn.vn.evil.com','photo-stal-7x.zdn.vn']:
+            with self.assertRaises(ValueError):validate_zalo_url('https://'+host+'/image.jpg')
+
     def test_provider_uses_moderation_not_chat(self):
         def handle(req):
             self.assertEqual(str(req.url),'https://api.openai.com/v1/moderations')

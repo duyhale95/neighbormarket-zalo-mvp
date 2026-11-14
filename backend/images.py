@@ -6,6 +6,7 @@ import http.client
 import io
 import ipaddress
 import json
+import re
 import socket
 import ssl
 import time
@@ -46,14 +47,15 @@ def validate_zalo_url(url):
     try:
         p = urlsplit(url)
         host = p.hostname or ''
-        allowed = host == 'photo-zalo.zadn.vn' or host.endswith('.zcdn.me')
+        # Photo hosts observed in real Deplao/Zalo incoming messages.
+        allowed = host == 'photo-zalo.zadn.vn' or host.endswith('.zcdn.me') or bool(re.fullmatch(r'photo-stal-[0-9]{1,3}\.zdn\.vn',host))
         if p.scheme != 'https' or not allowed or p.username or p.password or p.port not in (None, 443) or len(url) > 12000:
             raise ValueError()
         if not host.isascii() or '..' in host:
             raise ValueError()
         return p
     except ValueError:
-        raise ValueError('Ảnh phải đến trực tiếp từ CDN Zalo được cho phép.') from None
+        raise ValueError('Chưa nhận diện được địa chỉ ảnh Zalo này. Bạn gửi lại ảnh trực tiếp hoặc tải ảnh lên dashboard nhé.') from None
 
 
 def _fetch_zalo(url):
