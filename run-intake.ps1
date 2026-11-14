@@ -34,5 +34,6 @@ $env:INTAKE_API_KEY = $config.intake_key
 $env:COMMUNITY_ID = $channel.community_id
 $env:ZALO_ACCOUNT_ID = $channel.account_id
 $env:ZALO_TEST_SENDER_IDS = $channel.sender_ids -join ','
+$env:ZALO_IMAGES_ENABLED = if ($channel.images_enabled -eq $true) { 'true' } else { 'false' }
 Write-Host 'Trusted intake: http://127.0.0.1:8001; Zalo connection remains unverified.'
 & $pythonPath -m uvicorn backend.intake_bridge:from_environment --factory --host 127.0.0.1 --port 8001

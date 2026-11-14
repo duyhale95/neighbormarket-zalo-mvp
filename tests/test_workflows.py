@@ -7,6 +7,19 @@ from tools.build_deplao_workflows import build_intake, build_publisher, validate
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_media_graph_gates_paths_part_ids_receipts_and_separate_branches(self):
+        graph=build_publisher('test-bridge-key-123456','303','404',policy_validated=True,binding_verified=True,version=2)
+        nodes={n['label']:n for n in graph['nodes']}
+        self.assertEqual(nodes['SendPhoto']['type'],'zalo.sendImage')
+        self.assertFalse(nodes['SendPhoto']['config']['continueOnError'])
+        self.assertEqual(nodes['SendPhoto']['config']['filePath'],'{{ $node.Claim.data.image_path }}')
+        self.assertIn('X-Publisher-Version',nodes['Claim']['config']['headers'])
+        self.assertIn('part_id',nodes['PhotoAck']['config']['body'])
+        self.assertEqual(nodes['ValidPart']['config']['right'],'^[a-f0-9]{32}$')
+        self.assertEqual(nodes['PhotoReceipt']['config']['right'],'^[0-9]{1,100}$')
+        self.assertEqual(nodes['SafePath']['config']['operator'],'regex')
+        validate_graph(graph)
+
     def test_live_graph_generation_requires_verified_strict_account_binding(self):
         with self.assertRaises(ValueError):
             build_intake('test-intake-key-123456','303','202')

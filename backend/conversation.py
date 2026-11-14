@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from backend.ai import ListingExtraction
 from backend.moderation import assess_listing
 from backend.vnd import fold, parse_vnd
+from backend.messages import draft_message
 
 FIELDS=('title','price_vnd','condition')
 LABELS={'title':'tên sản phẩm','price_vnd':'giá','condition':'tình trạng'}
@@ -24,6 +25,8 @@ HELP='Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ
 def parse_action(text: str) -> tuple[str,str]:
     text=text.strip()
     normalized=' '.join(fold(text).split())
+    if normalized in ('huy nhap','huy ban nhap'): return 'huy',''
+    if re.fullmatch(r'NM-[A-F0-9]{12}',text,re.I): return 'detail',text.upper()
     if normalized in ('ok','xac nhan','xacnhan'): return 'xacnhan',''
     for prefix,action in [('xac nhan ','xacnhan'),('da ban ','daban'),
                            ('sua gia ','edit_price'),('sua tieu de ','edit_title')]:
@@ -125,8 +128,7 @@ def _save_complete(db: sqlite3.Connection, scope: tuple[str,str], listing_id: st
     data['values']=values
     set_context(db,scope,listing_id,data)
     return {'listing_id':listing_id,'status':'draft','missing_fields':[],
-        'reply':f'Bản nháp {listing_id}: {title}, {price:,}đ, {condition}.\n'
-                f'Nhắn xacnhan {listing_id} hoặc ok để gửi BQL duyệt. Sửa giá, sửa tiêu đề hoặc hủy trước khi xác nhận.'}
+        'reply':draft_message({'id':listing_id,**values})}
 
 
 def draft_action(db: sqlite3.Connection, event: Any, command: str, body: str,

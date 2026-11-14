@@ -53,6 +53,7 @@ class ZaloTransport(Protocol):
     def receive(self, metadata: dict[str, Any]) -> InboundMessage | None: ...
     def send_private(self, thread_id: str, text: str) -> SendOutcome: ...
     def send_group(self, group_id: str, text: str) -> SendOutcome: ...
+    def send_group_image(self, group_id: str, file_path: str, caption: str) -> SendOutcome: ...
     def health(self) -> ConnectionHealth: ...
 
 
@@ -113,3 +114,9 @@ class MockZaloTransport:
 
     def health(self) -> ConnectionHealth:
         return ConnectionHealth(mode='mock', status='simulated', evidence='In-memory test transport; no Zalo session')
+
+    def send_group_image(self, group_id: str, file_path: str, caption: str) -> SendOutcome:
+        from pathlib import Path
+        if group_id!=self.group_id or not Path(file_path).is_file():
+            return SendOutcome(status='not_sent',error='send_rejected',simulated=True)
+        return self._send('group_image',group_id,caption)

@@ -18,8 +18,9 @@ SCHEMA_FIELDS = {
     'output.httpRequest': {'method','url','headers','body','timeout'},
     'logic.if': {'left','operator','right'},
     'zalo.sendMessage': {'threadId','threadType','message','continueOnError','sendDelayMinSeconds','sendDelayMaxSeconds'},
+    'zalo.sendImage': {'threadId','threadType','message','continueOnError','filePath'},
 }
-TRIGGER_FIELDS = {'fromId','threadId','threadType','msgId','zaloId','isSelf','content','timestamp'}
+TRIGGER_FIELDS = {'fromId','threadId','threadType','msgId','zaloId','isSelf','content','timestamp','images'}
 
 
 def _digits(value: str) -> str:
@@ -82,12 +83,15 @@ def build_intake(key: str, account_id: str, sender_id: str, *, binding_verified:
 
 
 def build_publisher(key: str, account_id: str, group_id: str, *, policy_validated: bool = False,
-                    binding_verified: bool = False) -> dict:
+                    binding_verified: bool = False, version: int = 1, media_root: Path | None = None) -> dict:
     if not binding_verified:
         raise ValueError('Live graph blocked until strict runtime account binding is verified')
     _key(key); _digits(account_id); _digits(group_id)
     if not policy_validated:
         raise ValueError('Validate human policy and allowed group/account before generating a live publisher')
+    if version==2:
+        return _media_publisher(key,account_id,group_id,media_root)
+    if version!=1: raise ValueError('Unsupported publisher version')
     headers={'X-API-Key':key,'Content-Type':'application/json'}
     job='{{ $node.Claim.data.delivery_id }}'
     token='{{ $node.Claim.data.claim_token }}'
@@ -116,6 +120,52 @@ def build_publisher(key: str, account_id: str, group_id: str, *, policy_validate
         ('ValidJob','ValidToken','true'),('ValidToken','SendGroup','true'),
         ('SendGroup','RealSend','default'),('RealSend','Receipt','true'),
         ('Receipt','Ack','true'),('Receipt','Unknown','false')])
+
+
+def build_image_intake(key: str, account_id: str, sender_id: str, *, binding_verified: bool=False,
+                       image_metadata_verified: bool=False) -> dict:
+    if not image_metadata_verified: raise ValueError('Verify actual photo metadata before enabling image intake')
+    graph=build_intake(key,account_id,sender_id,binding_verified=binding_verified)
+    graph['name']='NeighborMarket - Private Image Intake'
+    nodes={n['label']:n for n in graph['nodes']}
+    nodes['ReceivePrivate']['config']['messageTypes']=['image']
+    nodes['Intake']['config'].update(url='http://127.0.0.1:8001/intake/image',body='NM-IMAGE:\n{{ $trigger.images.0 }}',timeout=30000)
+    validate_graph(graph)
+    return graph
+
+
+def _media_publisher(key: str, account_id: str, group_id: str, media_root: Path | None) -> dict:
+    # Gates are checked by build_publisher before reaching this private helper.
+    graph=build_publisher(key,account_id,group_id,policy_validated=True,binding_verified=True)
+    nodes={n['label']:n for n in graph['nodes']}
+    headers={'X-API-Key':key,'Content-Type':'application/json','X-Publisher-Version':'2'}
+    for label in ('Claim','Ack','Unknown'): nodes[label]['config']['headers']=json.dumps(headers)
+    part='{{ $node.Claim.data.part_id }}'; token='{{ $node.Claim.data.claim_token }}'; job='{{ $node.Claim.data.delivery_id }}'
+    for label in ('Ack','Unknown'):
+        body=json.loads(nodes[label]['config']['body']); body['part_id']=part; nodes[label]['config']['body']=json.dumps(body)
+    nodes['SendGroup']['config']['message']='{{ $node.Claim.data.message }}'
+    root=(media_root or Path(__file__).resolve().parents[1]/'private/group-media').resolve()
+    separator='\\' if os.name=='nt' else '/'
+    path_pattern='^'+re.escape(str(root)+separator)+r'[a-f0-9]{32}\.jpg$'
+    photo_receipt='{{ $node.SendPhoto.msgId }}'
+    additions=[
+        _if('ValidPart',part,'regex','^[a-f0-9]{32}$',7),
+        _if('HasPhoto','{{ $node.Claim.data.has_image }}','equals','true',8),
+        _if('SafePath','{{ $node.Claim.data.image_path }}','regex',path_pattern,9),
+        _node('SendPhoto','zalo.sendImage',{'threadId':group_id,'threadType':'1','filePath':'{{ $node.Claim.data.image_path }}',
+            'message':'{{ $node.Claim.data.message }}','continueOnError':False},10),
+        _if('RealPhoto','{{ $node.SendPhoto.simulated }}','not_equals','true',11),
+        _if('PhotoReceipt',photo_receipt,'regex','^[0-9]{1,100}$',12),
+        _http('PhotoAck',f'http://127.0.0.1:8000/deliveries/{job}/sent',headers,13,
+            json.dumps({'part_id':part,'claim_token':token,'sent_message_id':photo_receipt,'transport_mode':'deplao'})),
+        _http('PhotoUnknown',f'http://127.0.0.1:8000/deliveries/{job}/failure',headers,14,
+            json.dumps({'part_id':part,'claim_token':token,'outcome':'unknown','error':'other','transport_mode':'deplao'})),
+    ]
+    links=[(e['source'],e['target'],e['sourceHandle']) for e in graph['edges'] if e['source']!='ValidToken']
+    links += [('ValidToken','ValidPart','true'),('ValidPart','HasPhoto','true'),('HasPhoto','SendGroup','false'),
+        ('HasPhoto','SafePath','true'),('SafePath','SendPhoto','true'),('SendPhoto','RealPhoto','default'),
+        ('RealPhoto','PhotoReceipt','true'),('PhotoReceipt','PhotoAck','true'),('PhotoReceipt','PhotoUnknown','false')]
+    return _graph('NeighborMarket - Approved Photos Publisher v2',list(nodes.values())+additions,links)
 
 
 def validate_graph(graph: dict) -> None:
@@ -177,7 +227,12 @@ def main() -> None:
     parser.add_argument('--deplao-source',type=Path,required=True,help='Reviewed source with strict-account patch; unmodified upstream is refused')
     parser.add_argument('--installed-build-verified',action='store_true',help='Operator verified this exact strict source was built and is running')
     parser.add_argument('--policy-validated',action='store_true',help='Operator verified mandatory review policy and allowed group/account')
+    parser.add_argument('--publication-mode',choices=('single','photos_v2'),default='single')
+    parser.add_argument('--enable-images',action='store_true')
+    parser.add_argument('--image-metadata-verified',action='store_true')
     args=parser.parse_args()
+    if args.enable_images and (not args.image_metadata_verified or args.publication_mode!='photos_v2'):
+        parser.error('Images require verified photo metadata and photos_v2 publication mode')
     if not args.community.strip() or len(args.community)>100:
         parser.error('Invalid community')
     if not args.installed_build_verified:
@@ -192,11 +247,15 @@ def main() -> None:
         parser.error('Run .\\run-intake.ps1 once to initialize a distinct intake key, then stop it before generation')
     intake=build_intake(config['intake_key'],args.account_id,args.sender_id,binding_verified=True)
     publisher=build_publisher(config['bridge_key'],args.account_id,args.group_id,
-                             policy_validated=args.policy_validated,binding_verified=True)
-    outputs={'deplao-intake.json':intake,'deplao-publisher.json':publisher,
+                             policy_validated=args.policy_validated,binding_verified=True,version=2)
+    outputs={'deplao-intake.json':intake,'deplao-publisher-v2.json':publisher,
         'zalo-channel.json':{'account_id':args.account_id,'sender_ids':[args.sender_id],
             'group_id':args.group_id,'community_id':args.community,'policy_validated':True,
-            'strict_account_binding_verified':True,'deplao_engine_sha256':binding_hash}}
+            'strict_account_binding_verified':True,'deplao_engine_sha256':binding_hash,
+            'publication_mode':args.publication_mode,'images_enabled':args.enable_images,'image_metadata_verified':args.image_metadata_verified}}
+    if args.enable_images:
+        outputs['deplao-image-intake.json']=build_image_intake(config['intake_key'],args.account_id,args.sender_id,
+            binding_verified=True,image_metadata_verified=True)
     if any((root/'private'/name).exists() for name in outputs):
         parser.error('Existing generated files found. Preserve/review them before generating new files; nothing overwritten')
     for name,data in outputs.items(): write_private(root,root/'private'/name,data)

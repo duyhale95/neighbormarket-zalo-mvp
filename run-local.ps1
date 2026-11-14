@@ -39,6 +39,8 @@ if (Test-Path -LiteralPath $channelPath) {
     }
     $env:ZALO_LEGIT_GROUP_ID = $channel.group_id
     $env:ZALO_COMMUNITY_ID = $channel.community_id
+    if ($channel.publication_mode) { $env:ZALO_PUBLICATION_MODE = $channel.publication_mode }
+    $env:ZALO_IMAGES_ENABLED = if ($channel.images_enabled -eq $true) { 'true' } else { 'false' }
 }
 # Group, community and optional AI settings are inherited from the caller.
 if ([string]::IsNullOrWhiteSpace($env:ZALO_LEGIT_GROUP_ID)) {

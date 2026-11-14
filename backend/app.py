@@ -15,12 +15,15 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, StrictBool, ValidationError, model_validator
 import httpx
 
 from backend.ai import ListingExtraction, extract_listing
 from backend.conversation import HELP, clear_context, deterministic_patch, draft_action, parse_action, snapshot
 from backend.moderation import BLOCKING_FLAGS, moderation_flags
+from backend.images import ImageStore
+from backend.delivery_parts import DeliveryParts
+from backend.messages import item_message, transition_message, search_message
 
 audit_logger = logging.getLogger('neighbormarket.audit')
 audit_logger.setLevel(logging.INFO)
@@ -45,15 +48,19 @@ class Event(BaseModel):
 
 
 class Review(BaseModel):
+    model_config = {'str_strip_whitespace':True}
     community_id: str = Field(min_length=1, max_length=100)
     action: Literal['approve', 'reject']
     reason: str = Field(min_length=1, max_length=1000)
+    image_review_token: str | None = Field(default=None,max_length=64)
+    manual_image_review: StrictBool = False
 
 
 class DeliveryAck(BaseModel):
     claim_token: str = Field(min_length=1, max_length=200)
     sent_message_id: str | None = Field(default=None, max_length=200)
     transport_mode: Literal['mock', 'deplao', 'unverified'] = 'unverified'
+    part_id: str | None = Field(default=None,pattern=r'^[a-f0-9]{32}$')
 
     @model_validator(mode='after')
     def valid_receipt(self):
@@ -68,12 +75,14 @@ class DeliveryFailure(BaseModel):
     outcome: Literal['not_sent', 'unknown']
     error: str = Field(min_length=1, max_length=200)
     transport_mode: Literal['mock', 'deplao', 'unverified'] = 'unverified'
+    part_id: str | None = Field(default=None,pattern=r'^[a-f0-9]{32}$')
 
 
 class DeliveryReconciliation(BaseModel):
     decision: Literal['sent', 'not_sent']
     reason: str = Field(min_length=1, max_length=1000)
     sent_message_id: str | None = Field(default=None, max_length=200)
+    part_id: str | None = Field(default=None,pattern=r'^[a-f0-9]{32}$')
 
 
 def normalize(value):
@@ -81,7 +90,9 @@ def normalize(value):
     return ''.join(c for c in value if unicodedata.category(c) != 'Mn')
 
 
-def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_community_id='demo'):
+def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_community_id='demo',
+               image_moderator=None, zalo_images_enabled=False, publication_mode='single', media_dir=None):
+    if publication_mode not in ('single','photos_v2'): raise ValueError('Unknown publication mode')
     if not bridge_key or not admin_key or bridge_key == admin_key:
         raise ValueError('Configure two different nonempty API keys')
     db_path = Path(db_path)
@@ -144,6 +155,10 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
         delivery_columns = {row['name'] for row in db.execute('PRAGMA table_info(listing_deliveries)')}
         if 'transport_mode' not in delivery_columns:
             db.execute("ALTER TABLE listing_deliveries ADD COLUMN transport_mode TEXT NOT NULL DEFAULT 'unverified'")
+        for column in ('message_snapshot','snapshot_token'):
+            if column not in delivery_columns: db.execute(f'ALTER TABLE listing_deliveries ADD COLUMN {column} TEXT')
+        if 'part_id' not in {r['name'] for r in db.execute('PRAGMA table_info(delivery_reconciliations)')}:
+            db.execute('ALTER TABLE delivery_reconciliations ADD COLUMN part_id TEXT')
 
     app = FastAPI(title='NeighborMarket local MVP', version='0.1.0')
 
@@ -153,16 +168,24 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 raise HTTPException(401, 'Invalid API key')
         return check
 
+    images=ImageStore(database,image_moderator)
+    app.state.images=images
+    parts=DeliveryParts(database,images,db_path,media_dir)
+    app.state.parts=parts
+    app.state.publication_mode=publication_mode
+    images.install(app,authenticate,bridge_key,admin_key,enabled=zalo_images_enabled,community=target_community_id)
+
     def expire_claims(db):
+        parts.expire(db)
         # An expired worker may have sent already: never requeue automatically.
         db.execute("""UPDATE listing_deliveries SET status='unknown',
                       last_error='claim_expired', updated_at=CURRENT_TIMESTAMP
                       WHERE status='claimed' AND lease_expires_at <= CURRENT_TIMESTAMP""")
 
-    def public_delivery(row):
-        return {key: row[key] for key in (
+    def public_delivery(db,row):
+        return {**{key: row[key] for key in (
             'id', 'listing_id', 'community_id', 'target_group_id', 'status',
-            'attempts', 'last_error', 'sent_message_id', 'created_at', 'updated_at', 'transport_mode')}
+            'attempts', 'last_error', 'sent_message_id', 'created_at', 'updated_at', 'transport_mode')},'parts':parts.public(db,row['id'])}
 
     def require_claim(db, delivery_id, claim_token):
         row = db.execute('SELECT * FROM listing_deliveries WHERE id=?', (delivery_id,)).fetchone()
@@ -175,10 +198,12 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
     def public_text(value):
         return ' '.join(value.split())
 
-    def listing_record(row):
+    def listing_record(db,row):
         result = dict(row)
         raw = result.pop('moderation_report', '{}')
         result['moderation'] = json.loads(raw) or None
+        result['images']=images.metadata(db,row['id'])
+        result['image_review_token']=images.review_token(db,row['id'])
         return result
 
     @app.get('/health')
@@ -198,7 +223,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
     @app.get('/listings', dependencies=[Depends(authenticate(admin_key))])
     def listings(community_id: str = Query(min_length=1, max_length=100)):
         with database() as db:
-            return [listing_record(row) for row in db.execute(
+            return [listing_record(db,row) for row in db.execute(
                 'SELECT * FROM listings WHERE community_id=? ORDER BY rowid DESC LIMIT 100', (community_id,))]
 
     @app.post('/listings/{listing_id}/review', dependencies=[Depends(authenticate(admin_key))])
@@ -214,13 +239,18 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             if request.action == 'approve' and BLOCKING_FLAGS.intersection(moderation_flags(row['title'], row['condition'])):
                 raise HTTPException(422, 'Thông tin nhạy cảm hoặc mặt hàng bị cấm: từ chối và yêu cầu người bán viết lại.')
             status = 'approved' if request.action == 'approve' else 'rejected'
+            if status=='approved':
+                images.guard(db,listing_id,request.image_review_token,request.manual_image_review,request.reason)
             db.execute('UPDATE listings SET status=? WHERE id=?', (status, listing_id))
             db.execute('INSERT INTO reviews(listing_id,action,reason) VALUES (?,?,?)',
                        (listing_id, request.action, request.reason))
             delivery_status = 'not_applicable' if status == 'rejected' else 'not_configured'
             if status == 'approved' and target_group_id and request.community_id == target_community_id:
-                db.execute('INSERT INTO listing_deliveries(id,listing_id,community_id,target_group_id,status) VALUES (?,?,?,?,?)',
-                           (uuid4().hex, listing_id, request.community_id, target_group_id, 'queued'))
+                delivery_id=uuid4().hex
+                from backend.delivery_parts import listing_message
+                db.execute('INSERT INTO listing_deliveries(id,listing_id,community_id,target_group_id,status,message_snapshot,snapshot_token) VALUES (?,?,?,?,?,?,?)',
+                           (delivery_id, listing_id, request.community_id, target_group_id, 'queued',listing_message(row),images.review_token(db,listing_id)))
+                if app.state.publication_mode=='photos_v2': parts.enqueue(db,delivery_id,row)
                 delivery_status = 'queued'
             db.commit()
             audit('review', listing_id=listing_id, actor='admin-key', status=status,
@@ -228,7 +258,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             return {'listing_id': listing_id, 'status': status, 'delivery_status': delivery_status}
 
     @app.post('/deliveries/claim', dependencies=[Depends(authenticate(bridge_key))])
-    def claim_delivery():
+    def claim_delivery(x_publisher_version: str = Header(default='1')):
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             expire_claims(db)
@@ -236,9 +266,20 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 return Response(status_code=204)
             row = db.execute("""SELECT d.*, l.title, l.condition, l.price_vnd FROM listing_deliveries d
                 JOIN listings l ON l.id=d.listing_id AND l.community_id=d.community_id
-                WHERE d.status='queued' AND l.status='approved' AND d.target_group_id=?
+                WHERE d.status='queued' AND (l.status='approved' OR (l.status='sold' AND EXISTS
+                    (SELECT 1 FROM delivery_parts p WHERE p.delivery_id=d.id AND p.kind='sold_notice' AND p.status='queued')))
+                AND d.target_group_id=?
                 AND d.community_id=? ORDER BY d.rowid LIMIT 1""", (target_group_id, target_community_id)).fetchone()
             if not row:
+                return Response(status_code=204)
+            if x_publisher_version=='2' and not parts.has_parts(db,row['id']):
+                listing=db.execute('SELECT * FROM listings WHERE id=?',(row['listing_id'],)).fetchone()
+                parts.enqueue_single(db,row,listing)
+            if parts.has_parts(db,row['id']):
+                listing=db.execute('SELECT * FROM listings WHERE id=?',(row['listing_id'],)).fetchone()
+                return parts.claim(db,row,listing,x_publisher_version)
+            if row['snapshot_token'] and row['snapshot_token']!=images.review_token(db,row['listing_id']):
+                db.execute("UPDATE listing_deliveries SET status='failed',last_error='stale_snapshot' WHERE id=?",(row['id'],))
                 return Response(status_code=204)
             if BLOCKING_FLAGS.intersection(moderation_flags(row['title'], row['condition'])):
                 db.execute("UPDATE listing_deliveries SET status='failed', last_error='sensitive_information', updated_at=CURRENT_TIMESTAMP WHERE id=?", (row['id'],))
@@ -255,13 +296,14 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                        f"Giá: {row['price_vnd']:,}đ\nTình trạng: {public_text(row['condition'])}\n\n"
                        f"Mã tin: {row['listing_id']}\n\nNhắn riêng cho Meo Meo để tìm hiểu sản phẩm.")
             return {'delivery_id': row['id'], 'claim_token': token, 'group_id': row['target_group_id'],
-                    'message': message, 'attempt': row['attempts'] + 1}
+                    'message': row['message_snapshot'] or message, 'attempt': row['attempts'] + 1}
 
     @app.post('/deliveries/{delivery_id}/sent', dependencies=[Depends(authenticate(bridge_key))])
     def delivery_sent(delivery_id: str, request: DeliveryAck):
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             expire_claims(db)
+            if parts.has_parts(db,delivery_id): return parts.ack(db,delivery_id,request)
             row = require_claim(db, delivery_id, request.claim_token)
             if row['status'] == 'sent' and row['sent_message_id'] == request.sent_message_id:
                 return {'delivery_id': delivery_id, 'status': 'sent'}
@@ -277,6 +319,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             expire_claims(db)
+            if parts.has_parts(db,delivery_id): return parts.failure(db,delivery_id,request)
             row = require_claim(db, delivery_id, request.claim_token)
             if row['status'] != 'claimed':
                 raise HTTPException(409, 'Delivery is no longer claimed')
@@ -293,7 +336,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             expire_claims(db)
-            return [public_delivery(row) for row in db.execute('SELECT * FROM listing_deliveries WHERE community_id=? ORDER BY rowid DESC LIMIT 100', (community_id,))]
+            return [public_delivery(db,row) for row in db.execute('SELECT * FROM listing_deliveries WHERE community_id=? ORDER BY rowid DESC LIMIT 100', (community_id,))]
 
     @app.get('/deliveries/{delivery_id}', dependencies=[Depends(authenticate(bridge_key))])
     def delivery_status(delivery_id: str):
@@ -303,7 +346,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             row = db.execute('SELECT * FROM listing_deliveries WHERE id=?', (delivery_id,)).fetchone()
             if not row:
                 raise HTTPException(404, 'Delivery not found')
-            return public_delivery(row)
+            return public_delivery(db,row)
 
     @app.post('/deliveries/{delivery_id}/reconcile', dependencies=[Depends(authenticate(admin_key))])
     def reconcile_delivery(delivery_id: str, request: DeliveryReconciliation):
@@ -315,6 +358,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 raise HTTPException(404, 'Delivery not found')
             if row['status'] != 'unknown':
                 raise HTTPException(409, 'Only unknown deliveries may be reconciled')
+            if parts.has_parts(db,delivery_id): return parts.reconcile(db,delivery_id,request)
             status = 'sent' if request.decision == 'sent' else 'failed'
             db.execute('INSERT INTO delivery_reconciliations(delivery_id,decision,reason) VALUES (?,?,?)', (delivery_id, request.decision, request.reason))
             db.execute("UPDATE listing_deliveries SET status=?, sent_message_id=?, claim_token=NULL, transport_mode='manual', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -339,7 +383,7 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
             return json.loads(cached['response'])
         extracted = None
         ai_status, model_version = 'not_requested', 'rules-only'
-        if command not in ('ban', 'xacnhan', 'daban', 'tim', 'huy', 'edit_price', 'edit_title'):
+        if command not in ('ban', 'xacnhan', 'daban', 'tim', 'huy', 'edit_price', 'edit_title','detail'):
             ai_active = os.getenv('AI_ENABLED', '').lower() in ('1', 'true', 'yes') and bool(os.getenv('OPENAI_API_KEY', '').strip())
             started = time.monotonic()
             try:
@@ -390,11 +434,12 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                     in_flight = db.execute("SELECT 1 FROM listing_deliveries WHERE listing_id=? AND status IN ('claimed','unknown')", (body,)).fetchone()
                     if in_flight:
                         raise HTTPException(409, 'Tin đang gửi hoặc cần BQL đối soát trước khi báo đã bán')
-                    db.execute("UPDATE listing_deliveries SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE listing_id=? AND status='queued'", (body,))
+                    parts.sold(db,row)
+                    db.execute("UPDATE listing_deliveries SET status='cancelled', updated_at=CURRENT_TIMESTAMP WHERE listing_id=? AND status='queued' AND NOT EXISTS (SELECT 1 FROM delivery_parts p WHERE p.delivery_id=listing_deliveries.id AND p.kind='sold_notice' AND p.status='queued')", (body,))
                 db.execute('UPDATE listings SET status=? WHERE id=?', (status, body))
                 clear_context(db, (event.community_id, event.sender_id), body)
                 result = {'listing_id': body, 'status': status,
-                          'reply': 'Đã gửi BQL duyệt.' if status == 'pending' else 'Đã đánh dấu bán xong.'}
+                          'reply': transition_message(row,status)}
             elif command == 'tim':
                 terms = normalize(body).split()
                 if not terms:
@@ -402,7 +447,16 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 rows = db.execute("SELECT id,title,price_vnd,condition FROM listings WHERE community_id=? AND status='approved' ORDER BY rowid DESC", (event.community_id,))
                 found = [dict(r) for r in rows if not BLOCKING_FLAGS.intersection(moderation_flags(r['title'], r['condition']))
                          and all(term in normalize(r['title'] + ' ' + r['condition']) for term in terms)][:5]
-                result = {'listings': found, 'reply': '\n'.join(f"{r['id']} — {r['title']} — {r['price_vnd']:,}đ" for r in found) or 'Chưa có tin phù hợp đã được duyệt.'}
+                result = {'listings': found, 'reply': search_message(found)}
+            elif command=='detail':
+                listing=db.execute('SELECT * FROM listings WHERE id=? AND community_id=? AND (seller_id=? OR status=\'approved\')',(body,event.community_id,event.sender_id)).fetchone()
+                if not listing: raise HTTPException(404,'Listing not found')
+                status={'draft':'Bản nháp','pending':'Chờ BQL duyệt','approved':'Đã duyệt — không đồng nghĩa đã gửi nhóm','rejected':'BQL từ chối','sold':'Đã bán','cancelled':'Đã hủy'}[listing['status']]
+                reply=item_message(listing,status)
+                if listing['seller_id']==event.sender_id and listing['status']=='rejected':
+                    review=db.execute("SELECT reason FROM reviews WHERE listing_id=? ORDER BY rowid DESC LIMIT 1",(body,)).fetchone()
+                    if review: reply+='\nLý do BQL: '+review['reason']
+                result={'reply':reply}
             else:
                 result = {'reply': HELP}
             db.execute('INSERT INTO events VALUES (?,?,?,?)', (*identity, json.dumps(result, ensure_ascii=False)))
@@ -416,7 +470,9 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
 
 
 def from_environment():
+    from backend.runtime_config import images_enabled
     return create_app(os.getenv('DATABASE_PATH', 'private/market.db'),
                       os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'],
                       target_group_id=os.getenv('ZALO_LEGIT_GROUP_ID'),
-                      target_community_id=os.getenv('ZALO_COMMUNITY_ID', 'demo'))
+                      target_community_id=os.getenv('ZALO_COMMUNITY_ID', 'demo'),
+                      publication_mode=os.getenv('ZALO_PUBLICATION_MODE','single'),zalo_images_enabled=images_enabled())

@@ -19,6 +19,10 @@ class DeliveryJob(BaseModel):
     group_id: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=4000)
     attempt: int = Field(ge=1)
+    part_id: str | None = Field(default=None,pattern=r'^[a-f0-9]{32}$')
+    part_type: str | None = None
+    has_image: bool = False
+    image_path: str = ''
 
 
 class PublishResult(BaseModel):
@@ -35,7 +39,7 @@ class Publisher:
             raise ValueError('Bridge key and allowlisted group required')
         if transport.mode != 'mock' and not policy_validated:
             raise ValueError('Validate human policy and channel before enabling live publication')
-        self.client, self.headers = client, {'X-API-Key': bridge_key}
+        self.client, self.headers = client, {'X-API-Key': bridge_key,'X-Publisher-Version':'2'}
         self.transport, self.group_id = transport, group_id
 
     def process_once(self) -> PublishResult:
@@ -54,7 +58,10 @@ class Publisher:
             outcome = SendOutcome(status='not_sent', error='send_rejected', simulated=simulated)
         else:
             try:
-                outcome = SendOutcome.model_validate(self.transport.send_group(job.group_id, job.message))
+                if job.has_image:
+                    outcome = SendOutcome.model_validate(self.transport.send_group_image(job.group_id,job.image_path,job.message))
+                else:
+                    outcome = SendOutcome.model_validate(self.transport.send_group(job.group_id, job.message))
             except Exception:
                 # Arbitrary transport errors can contain credentials. Do not log them,
                 # and do not assume the remote send failed just because a call threw.
@@ -65,7 +72,7 @@ class Publisher:
             try:
                 ack = self.client.post(f'/deliveries/{job.delivery_id}/sent', headers=self.headers,
                     json={'claim_token': job.claim_token, 'sent_message_id': outcome.message_id,
-                          'transport_mode': 'mock' if simulated else 'deplao'}, timeout=8)
+                          'transport_mode': 'mock' if simulated else 'deplao',**({'part_id':job.part_id} if job.part_id else {})}, timeout=8)
                 if ack.status_code == 200:
                     return PublishResult(status='sent', delivery_id=job.delivery_id, simulated=simulated,
                                          acknowledgement_recorded=True)
@@ -74,7 +81,9 @@ class Publisher:
             # ACK may have committed. Reading state is safe; sending again is not.
             try:
                 saved = self.client.get(f'/deliveries/{job.delivery_id}', headers=self.headers, timeout=8)
-                if saved.status_code == 200 and saved.json().get('status') == 'sent':
+                stored=saved.json() if saved.status_code==200 else {}
+                acknowledged=any(p['id']==job.part_id and p['status']=='sent' for p in stored.get('parts',[])) if job.part_id else stored.get('status')=='sent'
+                if acknowledged:
                     return PublishResult(status='sent', delivery_id=job.delivery_id, simulated=simulated,
                                          acknowledgement_recorded=True)
             except (httpx.HTTPError, ValueError):
@@ -84,7 +93,8 @@ class Publisher:
         try:
             failure = self.client.post(f'/deliveries/{job.delivery_id}/failure', headers=self.headers,
                 json={'claim_token': job.claim_token, 'outcome': 'not_sent' if status == 'failed' else 'unknown',
-                      'error': outcome.error or 'other', 'transport_mode': 'mock' if simulated else 'deplao'}, timeout=8)
+                      'error': outcome.error or 'other', 'transport_mode': 'mock' if simulated else 'deplao',
+                      **({'part_id':job.part_id} if job.part_id else {})}, timeout=8)
             recorded = failure.status_code == 200
         except httpx.HTTPError:
             pass  # claimed -> unknown on expiry; never put back in queued.
