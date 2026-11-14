@@ -5,6 +5,7 @@ import { flagsOf, type Listing } from '@/lib/contracts';
 import { flagLabels, money, date, Notice, Status, sourceLabels, riskLabels } from './shared';
 import { mutate } from './use-data';
 import { ImageReview } from './image-review';
+import styles from './review.module.css';
 export function ReviewDialog({
   listing: initialListing,
   onClose,
@@ -45,9 +46,9 @@ export function ReviewDialog({
       });
       onSuccess(
         result.delivery_status === 'not_configured'
-          ? 'Đã duyệt nhưng chưa tạo delivery: thiếu cấu hình nhóm hoặc community không khớp. Không có backfill tự động.'
+          ? 'Đã duyệt. Hãy kiểm tra cấu hình nhóm để đăng tin.'
           : action === 'approve'
-            ? 'Đã duyệt tin và tạo delivery trong hàng chờ.'
+            ? 'Đã duyệt và xếp hàng đăng nhóm.'
             : 'Đã từ chối tin đăng.',
       );
     } catch (e) {
@@ -59,17 +60,24 @@ export function ReviewDialog({
   return (
     <dialog
       ref={dialog}
-      className="review-dialog"
+      className={`review-dialog ${styles.dialog}`}
       aria-labelledby="review-title"
       onCancel={(e) => {
         e.preventDefault();
         if (!busy) onClose();
       }}
     >
-      <div className="dialog-heading">
-        <span className="section-kicker">
-          {action ? 'XÁC NHẬN QUYẾT ĐỊNH' : 'CHI TIẾT TIN ĐĂNG'}
-        </span>
+      <header className={styles.header}>
+        <div>
+          <p className={styles.code}>{listing.id}</p>
+          <h2 id="review-title">
+            {action
+              ? action === 'approve'
+                ? 'Xác nhận phê duyệt'
+                : 'Xác nhận từ chối'
+              : listing.title}
+          </h2>
+        </div>
         <button
           className="icon-button"
           aria-label="Đóng chi tiết"
@@ -78,139 +86,136 @@ export function ReviewDialog({
         >
           <X size={20} />
         </button>
+      </header>
+      <div className={styles.body}>
+        {action ? (
+          <>
+            <div className="confirmation-summary">
+              <strong>{listing.title}</strong>
+              <p>
+                {money(listing.price_vnd)} · {listing.condition}
+              </p>
+              <small>Lý do: {reason}</small>
+            </div>
+            <p className="dialog-copy">
+              {action === 'approve'
+                ? 'Tin sẽ vào hàng chờ đăng nhóm Zalo đã cấu hình.'
+                : 'Người bán có thể xem lý do bằng mã tin.'}
+            </p>
+          </>
+        ) : (
+          <div className={styles.columns}>
+            <section className={styles.item} aria-label="Thông tin tin đăng">
+              <div className="detail-price">
+                {money(listing.price_vnd)}
+                <Status value={listing.status} />
+              </div>
+              <dl className="details-list">
+                <div>
+                  <dt>Tình trạng sản phẩm</dt>
+                  <dd>{listing.condition}</dd>
+                </div>
+                <div>
+                  <dt>Người đăng</dt>
+                  <dd>{listing.seller_id}</dd>
+                </div>
+                <div>
+                  <dt>Ngày tạo</dt>
+                  <dd>{date(listing.created_at)}</dd>
+                </div>
+                <div>
+                  <dt>Nguồn tin</dt>
+                  <dd>{sourceLabels[listing.source_channel || 'legacy']}</dd>
+                </div>
+              </dl>
+              <ImageReview
+                listing={listing}
+                onChange={(next) => {
+                  setListing(next);
+                  setManualImageReview(false);
+                  setAction(null);
+                }}
+              />
+            </section>
+            <section className={styles.review} aria-label="Kiểm duyệt và quyết định">
+              <h3>Kiểm duyệt và quyết định</h3>
+              {listing.moderation ? (
+                <div className="moderation-alert">
+                  <AlertTriangle size={20} aria-hidden="true" />
+                  <div>
+                    <strong>{riskLabels[listing.moderation.risk_level]}</strong>
+                    <span>{listing.moderation.reason}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="field-help">
+                  Tin cũ chưa có báo cáo moderation; BQL cần kiểm tra thủ công.
+                </p>
+              )}
+              {flags.length > 0 && (
+                <div className="moderation-alert">
+                  <AlertTriangle size={20} />
+                  <div>
+                    <strong>Cần BQL kiểm tra</strong>
+                    {flags.map((flag) => (
+                      <span key={flag}>{flagLabels[flag] || flag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {listing.moderation?.omni && (
+                <div className="moderation-alert">
+                  <AlertTriangle size={20} aria-hidden="true" />
+                  <div>
+                    <strong>Nhãn nội dung từ OpenAI</strong>
+                    <span>
+                      {listing.moderation.omni.status === 'flagged'
+                        ? listing.moderation.omni.categories.join(', ') || 'Cần xem xét nội dung'
+                        : listing.moderation.omni.status === 'clear'
+                          ? 'Không có nhãn bị gắn cờ'
+                          : 'Chưa có kết quả kiểm tra tự động'}
+                    </span>
+                    <small>{listing.moderation.omni.model}</small>
+                  </div>
+                </div>
+              )}
+              {blocked && <Notice message="Tin bị chặn duyệt. Ghi rõ lý do để người bán sửa." />}
+              {photoNeedsReview && !photoPending && listing.status === 'pending' && (
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={manualImageReview}
+                    onChange={(e) => setManualImageReview(e.target.checked)}
+                  />
+                  <span>Tôi đã kiểm tra ảnh và ghi nhận kết quả trong lý do.</span>
+                </label>
+              )}
+              {photoPending && (
+                <Notice message="Ảnh đang được kiểm tra. Hãy làm mới trước khi duyệt." />
+              )}
+              {listing.status === 'pending' && (
+                <>
+                  <label htmlFor="review-reason">
+                    Lý do quyết định <span aria-hidden="true">*</span>
+                  </label>
+                  <textarea
+                    id="review-reason"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                    maxLength={1000}
+                    placeholder="Ghi nhận nội dung đã kiểm tra hoặc lý do từ chối…"
+                    required
+                    rows={3}
+                  />
+                  <p className="field-help">Bắt buộc · Tối đa 1.000 ký tự</p>
+                </>
+              )}
+            </section>
+          </div>
+        )}
+        {error && <Notice message={error} />}
       </div>
-      <h2 id="review-title">
-        {action
-          ? action === 'approve'
-            ? 'Phê duyệt tin đăng này?'
-            : 'Từ chối tin đăng này?'
-          : listing.title}
-      </h2>
-      <p className="listing-code">{listing.id}</p>
-      {action ? (
-        <>
-          <div className="confirmation-summary">
-            <strong>{listing.title}</strong>
-            <p>
-              {money(listing.price_vnd)} · {listing.condition}
-            </p>
-            <small>Lý do: {reason}</small>
-          </div>
-          <p className="dialog-copy">
-            {action === 'approve'
-              ? 'Backend sẽ kiểm tra trạng thái và tạo delivery nếu nhóm đã cấu hình. Việc duyệt chưa đồng nghĩa với tin đã xuất hiện trên Zalo.'
-              : 'Tin bị từ chối sẽ không được đưa vào hàng chờ xuất bản.'}
-          </p>
-        </>
-      ) : (
-        <>
-          <div className="detail-price">
-            {money(listing.price_vnd)}
-            <Status value={listing.status} />
-          </div>
-          <dl className="details-list">
-            <div>
-              <dt>Tình trạng sản phẩm</dt>
-              <dd>{listing.condition}</dd>
-            </div>
-            <div>
-              <dt>Người đăng</dt>
-              <dd>{listing.seller_id}</dd>
-            </div>
-            <div>
-              <dt>Ngày tạo</dt>
-              <dd>{date(listing.created_at)}</dd>
-            </div>
-            <div>
-              <dt>Nguồn tin</dt>
-              <dd>{sourceLabels[listing.source_channel || 'legacy']}</dd>
-            </div>
-            <div>
-              <dt>Kết nối Zalo thật</dt>
-              <dd>Chưa xác minh · nguồn tin không phải bằng chứng kết nối live</dd>
-            </div>
-          </dl>
-          {listing.moderation ? (
-            <div className="moderation-alert">
-              <AlertTriangle size={20} aria-hidden="true" />
-              <div>
-                <strong>{riskLabels[listing.moderation.risk_level]}</strong>
-                <span>{listing.moderation.reason}</span>
-                <span>Luôn cần BQL duyệt · không có xác suất rủi ro đã hiệu chỉnh.</span>
-                <small>
-                  {listing.moderation.policy_version} · {listing.moderation.model_version} ·{' '}
-                  {listing.moderation.ai_status === 'advisory'
-                    ? 'Tín hiệu AI tư vấn'
-                    : listing.moderation.ai_status === 'unavailable'
-                      ? 'AI không khả dụng'
-                      : 'Kiểm tra bằng luật'}
-                </small>
-              </div>
-            </div>
-          ) : (
-            <p className="field-help">
-              Tin cũ chưa có báo cáo moderation; BQL cần kiểm tra thủ công.
-            </p>
-          )}
-          {flags.length > 0 && (
-            <div className="moderation-alert">
-              <AlertTriangle size={20} />
-              <div>
-                <strong>Cần BQL kiểm tra</strong>
-                {flags.map((flag) => (
-                  <span key={flag}>{flagLabels[flag] || flag}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          {blocked && (
-            <Notice message="Có thông tin nhạy cảm hoặc từ khóa hàng cấm. Hãy từ chối và yêu cầu người bán viết lại; backend sẽ chặn phê duyệt." />
-          )}
-          <ImageReview
-            listing={listing}
-            onChange={(next) => {
-              setListing(next);
-              setManualImageReview(false);
-              setAction(null);
-            }}
-          />
-          {!!listing.images?.length && listing.status === 'pending' && (
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={manualImageReview}
-                onChange={(e) => setManualImageReview(e.target.checked)}
-              />
-              <span>
-                Tôi đã trực tiếp xem ảnh đúng phiên bản, kiểm tra nội dung và ghi bằng chứng vào lý
-                do. Không coi clear là chứng nhận hàng thật.
-              </span>
-            </label>
-          )}
-          {photoNeedsReview && (
-            <Notice message="Ảnh chưa clear hoặc đã stale: kiểm tra lại, hoặc BQL ghi bằng chứng thủ công. Ảnh pending luôn chặn duyệt." />
-          )}
-          {listing.status === 'pending' && (
-            <>
-              <label htmlFor="review-reason">
-                Lý do quyết định <span aria-hidden="true">*</span>
-              </label>
-              <textarea
-                id="review-reason"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                maxLength={1000}
-                placeholder="Ghi nhận nội dung đã kiểm tra hoặc lý do từ chối…"
-                required
-                rows={3}
-              />
-              <p className="field-help">Bắt buộc · Tối đa 1.000 ký tự</p>
-            </>
-          )}
-        </>
-      )}
-      {error && <Notice message={error} />}
-      <div className="dialog-actions">
+      <div className={`dialog-actions ${styles.actions}`}>
         {action ? (
           <>
             <button

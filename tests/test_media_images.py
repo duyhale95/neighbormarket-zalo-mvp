@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from PIL import Image
+from pillow_heif import from_pillow
 from backend.app import create_app
 
 
@@ -63,12 +64,32 @@ class MediaImageTests(unittest.TestCase):
             self.assertFalse(normalized.getexif())
         self.assertEqual(self.upload(community='other').status_code,404)
 
-    def test_invalid_large_animated_and_excess_images_are_rejected(self):
+    def test_invalid_oversized_upload_and_excess_images_are_rejected(self):
         self.assertEqual(self.upload(b'not an image').status_code,422)
         self.assertEqual(self.upload(b'x'*(4*1024*1024+1)).status_code,422)
-        self.assertEqual(self.upload(photo(size=(4100,4000))).status_code,422)
         for i in range(5): self.assertEqual(self.upload(photo((i*30,10,20))).status_code,200)
         self.assertEqual(self.upload(photo('blue')).status_code,409)
+
+    def test_animated_gif_is_stored_as_the_first_frame(self):
+        source = io.BytesIO()
+        first = Image.new('RGB', (32, 32), 'red')
+        first.save(source, format='GIF', save_all=True,
+                   append_images=[Image.new('RGB', (32, 32), 'blue')], duration=100)
+        response = self.upload(source.getvalue())
+        response.raise_for_status()
+        saved = self.client.get(f"/images/{response.json()['image_id']}?community_id=demo",headers=self.admin)
+        with Image.open(io.BytesIO(saved.content)) as result:
+            self.assertEqual(result.format, 'JPEG')
+            self.assertGreater(result.getpixel((0, 0))[0], 200)
+
+    def test_heic_is_normalized_for_bql(self):
+        source = io.BytesIO()
+        from_pillow(Image.new('RGB', (32, 32), 'blue')).save(source)
+        response = self.upload(source.getvalue())
+        response.raise_for_status()
+        preview = self.client.get(f"/images/{response.json()['image_id']}?community_id=demo",
+                                  headers=self.admin)
+        self.assertEqual(preview.headers['content-type'], 'image/jpeg')
 
     def test_review_token_stale_recheck_manual_evidence_and_immutability(self):
         self.moderator.status='unavailable'

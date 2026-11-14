@@ -111,7 +111,7 @@ def run(out: Path):
                         dialog.locator('input[type=checkbox]').check()
                         approve.click()
                         dialog.get_by_role('button', name='Xác nhận phê duyệt').click()
-                        page.get_by_text('Đã duyệt tin và tạo delivery').wait_for()
+                        page.get_by_text('Đã duyệt và xếp hàng đăng nhóm.').wait_for()
                         check('1440px: approval with current token and manual evidence succeeds', True)
                     page.goto(ORIGIN + '/bql/deliveries')
                     page.locator('details').first.wait_for()

@@ -11,15 +11,19 @@ def item_message(row, status: str) -> str:
 
 
 def draft_message(row) -> str:
-    return f"Bản nháp {row['id']}:\n\n"+item_message(row,'Bản nháp — chưa gửi duyệt')+'\n\nNhắn xác nhận hoặc ok để gửi BQL. Sửa giá, sửa tiêu đề hoặc hủy nháp trước khi xác nhận.'
+    return (f"Dạ, mình đã soạn bản nháp {row['id']}.\n"
+            f"{row['title']} · {currency(row['price_vnd'])}\n"
+            f"Tình trạng: {row['condition']}\n"
+            "Bạn có thể gửi ảnh rồi nhắn xác nhận để gửi BQL ạ.")
 
 
 def transition_message(row, status: str) -> str:
     if status=='pending':
-        return item_message(row,'Chờ BQL duyệt')+'\n\nBQL phải duyệt trước khi tin vào hàng chờ xuất bản. Chưa đăng lên nhóm.'
-    return item_message(row,'Đã bán')+'\n\nTin đã ngừng xuất hiện trong tìm kiếm. Nếu bài gốc có receipt, thông báo đã bán được đưa vào outbox; chưa phải xác nhận gửi nhóm.'
+        return f"Dạ, tin {row['id']} đang chờ BQL duyệt."
+    return f"Dạ, tin {row['id']} đã được đánh dấu đã bán."
 
 
 def search_message(rows) -> str:
-    if not rows: return 'Chưa có tin phù hợp đã được duyệt và còn bán. Thử từ khóa ngắn hơn, ví dụ: tìm ghế.'
-    return '\n\n'.join(item_message(row,'Đã được BQL duyệt · kiểm tra còn bán trước khi giao dịch') for row in rows)+'\n\nGửi lại một mã tin để xem chi tiết. Trạng thái duyệt không đồng nghĩa đã đăng nhóm.'
+    if not rows: return 'Dạ, chưa có món phù hợp. Bạn thử từ khóa ngắn hơn nhé.'
+    items = [f"{row['title']} · {currency(row['price_vnd'])} · {row['id']}" for row in rows]
+    return 'Dạ, mình tìm được:\n' + '\n'.join(items) + '\nNhắn mã tin để xem chi tiết ạ.'

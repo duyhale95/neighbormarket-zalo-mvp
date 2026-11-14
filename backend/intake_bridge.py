@@ -64,9 +64,10 @@ def create_intake_app(backend_url: str, backend_key: str, intake_key: str,
                    'source_channel': source_channel}
         try:
             if client is None:
-                response = httpx.post(endpoint, json=payload, headers={'X-API-Key': backend_key}, timeout=8.0)
+                # Leave time for extraction and database work within the 15-second Deplao request.
+                response = httpx.post(endpoint, json=payload, headers={'X-API-Key': backend_key}, timeout=12.0)
             else:
-                response = client.post(endpoint, json=payload, headers={'X-API-Key': backend_key}, timeout=8.0)
+                response = client.post(endpoint, json=payload, headers={'X-API-Key': backend_key}, timeout=12.0)
             if response.status_code == 200:
                 body = response.json()
                 reply = body.get('reply') if isinstance(body, dict) else None
@@ -74,11 +75,11 @@ def create_intake_app(backend_url: str, backend_key: str, intake_key: str,
                     return {'ignored': bool(body.get('ignored', False)), 'thread_id': event.thread_id, 'reply': reply}
                 reply = 'Hệ thống tạm thời không xử lý được. Vui lòng liên hệ BQL.'
             elif response.status_code == 404:
-                reply = 'Không tìm thấy tin phù hợp với tài khoản của bạn.'
+                reply = 'Dạ, mình không tìm thấy tin. Bạn kiểm tra lại mã nhé.'
             elif response.status_code == 409:
-                reply = 'Trạng thái tin không cho phép thao tác này.'
+                reply = 'Dạ, trạng thái tin chưa cho phép thao tác này ạ.'
             elif response.status_code == 422:
-                reply = 'Nội dung chưa hợp lệ. Hãy kiểm tra lệnh và thông tin sản phẩm.'
+                reply = 'Dạ, nội dung chưa hợp lệ. Bạn kiểm tra tên món, giá và tình trạng nhé.'
             else:
                 reply = 'Hệ thống tạm thời không xử lý được. Vui lòng liên hệ BQL.'
         except (httpx.RequestError, ValueError):
@@ -159,7 +160,7 @@ def create_intake_app(backend_url: str, backend_key: str, intake_key: str,
                 if not isinstance(reply,str): reply={
                     409:'Chưa lưu ảnh: chỉ nhận ảnh khi bạn đang có bản nháp chưa xác nhận (tối đa 5 ảnh). '
                         'Tin đã gửi BQL hoặc đã duyệt không bổ sung ảnh được; hãy tạo tin mới nếu cần đăng kèm ảnh.',
-                    422:'Chưa lưu ảnh: chỉ nhận ảnh tĩnh JPEG, PNG hoặc WebP, tối đa 4 MiB.',
+                    422:'Dạ, mình chưa tải hoặc đọc được ảnh. Bạn gửi lại ảnh qua Zalo nhé.',
                 }.get(response.status_code,'Chưa lưu được ảnh. Kiểm tra bản nháp, kết nối và cấu hình với BQL.')
             except (httpx.HTTPError,ValueError):
                 reply='Chưa xác định được kết quả lưu ảnh. Nhờ BQL kiểm tra trước khi gửi lại.'

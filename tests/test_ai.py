@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,7 +62,7 @@ class AIIntegrationTests(unittest.TestCase):
     def test_timeout_falls_back_to_commands(self, extract):
         with patch.dict('os.environ', {'AI_ENABLED': 'true', 'OPENAI_API_KEY': 'fake'}):
             result = self.event('Mình muốn bán bàn học').json()
-        self.assertIn('ban Tên món', result['reply'])
+        self.assertIn('giá', result['reply'])
 
     @patch('backend.app.extract_listing')
     def test_deterministic_commands_never_call_ai(self, extract):
@@ -75,6 +76,38 @@ class AIIntegrationTests(unittest.TestCase):
         self.event('xacnhan ' + draft['listing_id'])
         rows = self.client.get('/listings?community_id=demo', headers=self.admin).json()
         self.assertIn('sensitive_information', json.loads(rows[0]['moderation_flags']))
+
+    @patch('backend.app.OpenAIModerator.check_text', create=True)
+    def test_confirmed_listing_shows_omni_labels_without_auto_approval(self, check_text):
+        check_text.return_value = {'status': 'flagged', 'categories': ['harassment'],
+                                   'model': 'omni-moderation-latest'}
+        with patch.dict('os.environ', {'TEXT_MODERATION_ENABLED': 'true', 'OPENAI_API_KEY': 'fake'}):
+            draft = self.event('ban Ghế | 500000 | cũ').json()
+            result = self.event('xacnhan ' + draft['listing_id'], 'confirmation')
+            self.assertEqual(result.json()['status'], 'pending')
+            self.event('xacnhan ' + draft['listing_id'], 'confirmation')
+        check_text.assert_called_once_with('Ghế\ncũ')
+        listing = self.client.get('/listings?community_id=demo', headers=self.admin).json()[0]
+        self.assertEqual(listing['moderation']['omni']['categories'], ['harassment'])
+        self.assertEqual(listing['moderation']['omni']['status'], 'flagged')
+
+    @patch('backend.app.OpenAIModerator.check_text')
+    def test_legacy_draft_has_complete_report_after_omni_check(self, check_text):
+        check_text.return_value = {'status': 'clear', 'categories': [],
+                                   'model': 'omni-moderation-latest'}
+        draft_id = self.event('ban Ghế | 500000 | cũ').json()['listing_id']
+        connection = sqlite3.connect(Path(self.tmp.name) / 'db.sqlite')
+        try:
+            with connection:
+                connection.execute("UPDATE listings SET moderation_report='{}' WHERE id=?", (draft_id,))
+        finally:
+            connection.close()
+        with patch.dict('os.environ', {'TEXT_MODERATION_ENABLED': 'true'}):
+            self.event('xacnhan ' + draft_id).raise_for_status()
+        report = self.client.get('/listings?community_id=demo', headers=self.admin).json()[0]['moderation']
+        self.assertEqual(report['risk_level'], 'low')
+        self.assertIs(report['requires_review'], True)
+        self.assertEqual(report['omni']['status'], 'clear')
 
 
 class OpenAIContractTests(unittest.TestCase):

@@ -84,7 +84,7 @@ class ConversationTests(unittest.TestCase):
 
     def test_late_ai_result_does_not_resurrect_cancelled_context_or_hold_write_lock(self):
         entered=threading.Event(); release=threading.Event()
-        def slow(text):
+        def slow(text, *, draft):
             entered.set(); release.wait(3)
             return {'intent':'sell','title':'Ghế','price_vnd':800000,'condition':'cũ',
                     'missing_fields':[],'risk_flags':[]}
@@ -132,3 +132,22 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual(result['status'],'draft')
         self.assertEqual(self.rows()[0]['price_vnd'],800000)
         self.assertEqual(self.rows()[0]['condition'],'còn tốt')
+
+    def test_followup_uses_existing_draft_context_and_preserves_same_listing(self):
+        self.event('Mình muốn bán chiếc ghế, còn tốt.')
+        with patch('backend.app.extract_listing', return_value={
+            'intent': 'sell', 'title': None, 'price_vnd': 800000, 'condition': None,
+            'missing_fields': [], 'risk_flags': [],
+        }) as extract:
+            result = self.event('800k nhé').json()
+        self.assertEqual(result['status'], 'draft')
+        self.assertEqual(extract.call_args.kwargs['draft'], {'title': 'ghế', 'condition': 'còn tốt'})
+        self.assertEqual(result['reply'].count(result['listing_id']), 1)
+        self.assertIn('xác nhận', result['reply'])
+
+    def test_accented_sell_request_and_short_edit(self):
+        result = self.event('Bán ghế, giá 800k, còn tốt').json()
+        self.assertEqual(result['status'], 'draft')
+        edited = self.event('Sửa tình trạng Đã dùng 1 năm').json()
+        self.assertEqual(edited['listing_id'], result['listing_id'])
+        self.assertEqual(self.rows()[0]['condition'], 'Đã dùng 1 năm')

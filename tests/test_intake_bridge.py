@@ -60,7 +60,7 @@ class IntakeTests(unittest.TestCase):
             result = self.client.post('/intake', json=event, headers=self.headers).json()
             self.assertIn(fragment, result['reply'].lower())
         first = self.client.post('/intake', json=self.event, headers=self.headers).json()
-        listing_id = first['reply'].split()[2].rstrip(':')
+        listing_id = first['reply'].splitlines()[0].rsplit(' ', 1)[-1].rstrip('.')
         confirm = {**self.event, 'message_id': 'confirm', 'text': f'xacnhan {listing_id}'}
         self.client.post('/intake', json=confirm, headers=self.headers)
         confirm['message_id'] = 'confirm-again'

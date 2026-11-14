@@ -2,12 +2,12 @@ import unittest
 from unittest.mock import Mock, patch
 import httpx
 
-from backend.image_fetch import _download, validate_zalo_url, MAX_BYTES
+from backend.image_fetch import _download, validate_zalo_url
 from backend.images import OpenAIModerator
 
 
 class ImageFetchTests(unittest.TestCase):
-    def test_unsafe_urls_dns_redirects_and_size_are_rejected(self):
+    def test_unsafe_urls_dns_redirects_and_bad_length_are_rejected(self):
         for url in ('http://photo-zalo.zadn.vn/a','https://127.0.0.1/a','https://photo-zalo.zadn.vn.evil.test/a',
                     'https://photo-zalo.zadn.vn:444/a','https://x@photo-zalo.zadn.vn/a',
                     'https://photo-zalo.zadn.vn/a#fragment','https://unverified.zcdn.me/a'):
@@ -16,19 +16,24 @@ class ImageFetchTests(unittest.TestCase):
         with patch('backend.image_fetch.socket.getaddrinfo',return_value=[(0,0,0,'',('127.0.0.1',443))]),patch('backend.image_fetch.http.client.HTTPSConnection') as connection:
             with self.assertRaises(ValueError): _download(url)
             connection.assert_not_called()
-        for status,size in ((302,None),(403,None),(200,str(MAX_BYTES+1))):
+        for status,size in ((302,None),(403,None),(200,'invalid')):
             response=Mock(status=status); response.getheader.return_value=size
             with patch('backend.image_fetch.socket.getaddrinfo',return_value=[(0,0,0,'',('8.8.8.8',443))]),patch('backend.image_fetch.http.client.HTTPSConnection') as connection:
                 connection.return_value.getresponse.return_value=response
                 with self.assertRaises(ValueError): _download(url)
                 connection.return_value.close.assert_called_once()
 
-    def test_global_ip_is_pinned_with_original_tls_hostname_and_bounded_bytes(self):
+    def test_global_ip_is_pinned_and_download_can_exceed_four_mib(self):
         url='https://photo-stal-7.zdn.vn/product.jpg'
-        response=Mock(status=200); response.getheader.return_value='3'; response.read1.side_effect=[b'abc',b'']
-        with patch('backend.image_fetch.socket.getaddrinfo',return_value=[(0,0,0,'',('8.8.8.8',443))]) as dns,patch('backend.image_fetch.http.client.HTTPSConnection') as connection,patch('backend.image_fetch.socket.create_connection') as socket:
+        chunk = b'a' * 65536
+        response=Mock(status=200)
+        response.getheader.return_value=str(len(chunk) * 65)
+        response.read1.side_effect=[chunk] * 65 + [b'']
+        addresses = [(0,0,0,'',('2402:9d80:100::64a',443)), (0,0,0,'',('8.8.8.8',443))]
+        with patch('backend.image_fetch.socket.getaddrinfo',return_value=addresses) as dns,patch('backend.image_fetch.http.client.HTTPSConnection') as connection,patch('backend.image_fetch.socket.create_connection') as socket:
             connection.return_value.getresponse.return_value=response
-            self.assertEqual(_download(url),b'abc')
+            with _download(url) as downloaded:
+                self.assertEqual(downloaded.read(),chunk * 65)
             self.assertEqual(connection.call_args.args[0],'photo-stal-7.zdn.vn')
             connection.return_value._create_connection(('rebound.test',443),timeout=2)
             self.assertEqual(socket.call_args.args[0],('8.8.8.8',443))

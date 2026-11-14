@@ -13,26 +13,34 @@ import re
 import time
 import warnings
 from uuid import uuid4
+from contextlib import nullcontext
+from typing import BinaryIO
 
 import httpx
 from fastapi import Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from backend.image_fetch import MAX_BYTES, fetch_zalo
+from backend.image_fetch import fetch_zalo
+
+register_heif_opener()
+PHOTO_FORMATS = ('JPEG', 'PNG', 'WEBP', 'GIF', 'HEIF', 'AVIF', 'BMP', 'TIFF')
 
 
-def prepare_image(raw: bytes) -> tuple[bytes, str, str]:
-    if not raw or len(raw) > MAX_BYTES:
-        raise ValueError('Ảnh tối đa 4 MiB.')
+def prepare_image(raw: bytes | BinaryIO) -> tuple[bytes, str, str]:
+    source = io.BytesIO(raw) if isinstance(raw, bytes) else raw
     try:
         with warnings.catch_warnings():
             warnings.simplefilter('error', Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(raw)) as original:
-                if original.format not in ('JPEG','PNG','WEBP') or original.width * original.height > 16_000_000 or getattr(original,'n_frames',1) != 1:
-                    raise ValueError('Chỉ nhận ảnh tĩnh JPEG/PNG/WebP, tối đa 16 triệu pixel.')
+            with Image.open(source, formats=PHOTO_FORMATS) as original:
+                if original.width * original.height > 50_000_000:
+                    raise ValueError('Không xử lý được định dạng hoặc độ phân giải ảnh này.')
+                # Only the visible frame we review is stored and published.
+                if original.format in ('GIF', 'WEBP', 'PNG'):
+                    original.seek(0)
                 original.load()
                 image = ImageOps.exif_transpose(original).convert('RGB')
                 image.thumbnail((1600,1600))
@@ -57,13 +65,22 @@ class OpenAIModerator:
         self.key, self.model, self.transport = key, model, transport
 
     def check(self, data: bytes, mime: str, text: str) -> dict:
+        encoded = base64.b64encode(data).decode()
+        return self._check([
+            {'type': 'text', 'text': text[:2000]},
+            {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{encoded}'}},
+        ])
+
+    def check_text(self, text: str) -> dict:
+        return self._check([{'type': 'text', 'text': text[:2000]}])
+
+    def _check(self, inputs: list[dict]) -> dict:
         if not self.key:
             return {'status':'unavailable','categories':[], 'model':'unavailable'}
         try:
             with httpx.Client(transport=self.transport, timeout=httpx.Timeout(5,connect=2), trust_env=False) as client:
                 response = client.post('https://api.openai.com/v1/moderations', headers={'Authorization':'Bearer '+self.key},
-                    json={'model':self.model,'input':[{'type':'text','text':text[:2000]},
-                    {'type':'image_url','image_url':{'url':'data:'+mime+';base64,'+base64.b64encode(data).decode()}}]})
+                    json={'model': self.model, 'input': inputs})
                 response.raise_for_status()
                 body=response.json(); result=body['results'][0]
                 if type(result['flagged']) is not bool or not isinstance(result['categories'],dict) or any(type(v) is not bool for v in result['categories'].values()):
@@ -148,7 +165,7 @@ class ImageStore:
             # SDK errors can contain keys and input: never persist their exception text.
             return {'status':'error','categories':[],'model':'unavailable'}
 
-    def upload(self, listing_id: str, community: str, raw: bytes, *, seller: str | None = None, context_revision: int | None = None) -> dict:
+    def upload(self, listing_id: str, community: str, raw: bytes | BinaryIO, *, seller: str | None = None, context_revision: int | None = None) -> dict:
         try: data,mime,digest=prepare_image(raw)
         except ValueError as error: raise HTTPException(422,str(error)) from None
         with self.database() as db:
@@ -198,8 +215,9 @@ class ImageStore:
             if not context: raise HTTPException(409,'Nhắn đủ thông tin để tạo bản nháp trước, rồi gửi ảnh trước khi xác nhận.')
         try: raw=fetch_zalo(url)
         except ValueError as error: raise HTTPException(422,str(error)) from None
-        result=self.upload(context['listing_id'],community,raw,seller=sender,context_revision=context['revision'])
-        result={**result,'listing_id':context['listing_id'],'reply':f"Đã lưu ảnh cho {context['listing_id']}. BQL vẫn cần xem ảnh và duyệt tin. Nhắn xác nhận khi đã đủ thông tin."}
+        with nullcontext(raw) if isinstance(raw, bytes) else raw as source:
+            result=self.upload(context['listing_id'],community,source,seller=sender,context_revision=context['revision'])
+        result={**result,'listing_id':context['listing_id'],'reply':f"Dạ, mình đã lưu ảnh cho {context['listing_id']}. Khi đủ ảnh, bạn nhắn xác nhận nhé."}
         with self.database() as db:
             db.execute('INSERT OR IGNORE INTO image_events VALUES (?,?,?,?)',(*identity,json.dumps(result,ensure_ascii=False)))
             return json.loads(db.execute('SELECT response FROM image_events WHERE community_id=? AND sender_id=? AND event_id=?',identity).fetchone()['response'])
@@ -226,6 +244,8 @@ class ImageStore:
                 body=Upload.model_validate_json(raw)
                 data=base64.b64decode(body.image_base64,validate=True)
             except (ValueError,ValidationError): raise HTTPException(422,'Dữ liệu upload không hợp lệ.') from None
+            if len(data) > 4 * 1024 * 1024:
+                raise HTTPException(422, 'Ảnh tải từ BQL tối đa 4 MiB.')
             return await run_in_threadpool(self.upload,listing_id,body.community_id,data)
 
         @app.post('/image-events',dependencies=[Depends(authenticate(bridge_key))])

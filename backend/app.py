@@ -20,8 +20,8 @@ import httpx
 
 from backend.ai import ListingExtraction, extract_listing
 from backend.conversation import HELP, clear_context, deterministic_patch, draft_action, parse_action, snapshot
-from backend.moderation import BLOCKING_FLAGS, moderation_flags
-from backend.images import ImageStore
+from backend.moderation import BLOCKING_FLAGS, assess_listing, moderation_flags
+from backend.images import ImageStore, OpenAIModerator
 from backend.delivery_parts import DeliveryParts
 from backend.messages import item_message, transition_message, search_message
 
@@ -390,19 +390,32 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
         identity = (event.community_id, event.sender_id, event.event_id)
         text = event.text.strip()
         command, body = parse_action(text)
+        text_moderation_enabled = command == 'xacnhan' and os.getenv('TEXT_MODERATION_ENABLED', '').lower() == 'true'
+        checked_draft = None
         # Check the replay cache before network access, then recheck under the write lock.
         with database() as db:
             cached = db.execute('SELECT response FROM events WHERE community_id=? AND sender_id=? AND event_id=?', identity).fetchone()
             context_snapshot = snapshot(db, (event.community_id, event.sender_id))
+            if text_moderation_enabled and not cached:
+                checked_draft = db.execute(
+                    "SELECT id, title, condition FROM listings WHERE id=? AND community_id=? AND seller_id=? AND status='draft'",
+                    (body or context_snapshot['listing_id'], event.community_id, event.sender_id),
+                ).fetchone()
         if cached:
             return json.loads(cached['response'])
+        omni = None
+        if checked_draft is not None:
+            moderator = OpenAIModerator(os.getenv('OPENAI_API_KEY'),
+                                        model=os.getenv('TEXT_MODERATION_MODEL', 'omni-moderation-latest'))
+            omni = moderator.check_text(checked_draft['title'] + '\n' + checked_draft['condition'])
         extracted = None
         ai_status, model_version = 'not_requested', 'rules-only'
-        if command not in ('ban', 'xacnhan', 'daban', 'tim', 'huy', 'edit_price', 'edit_title','detail'):
+        if command == 'chat':
             ai_active = os.getenv('AI_ENABLED', '').lower() in ('1', 'true', 'yes') and bool(os.getenv('OPENAI_API_KEY', '').strip())
             started = time.monotonic()
             try:
-                raw = extract_listing(text)
+                values = context_snapshot['data'].get('values', {})
+                raw = extract_listing(text, draft=values)
                 if raw is not None:
                     extracted = ListingExtraction.model_validate(raw)
             except (httpx.HTTPError, ValueError, TypeError, ValidationError):
@@ -444,6 +457,15 @@ def create_app(db_path, bridge_key, admin_key, *, target_group_id=None, target_c
                 required, status = ('draft', 'pending') if command == 'xacnhan' else ('approved', 'sold')
                 if row['status'] != required:
                     raise HTTPException(409, 'Listing is not in the required state')
+                if text_moderation_enabled:
+                    if checked_draft is None or tuple(checked_draft) != (row['id'], row['title'], row['condition']):
+                        raise HTTPException(409, 'Bản nháp đã thay đổi. Hãy xác nhận lại.')
+                    report = json.loads(row['moderation_report'])
+                    if not report:
+                        report = assess_listing(row['title'], row['condition'], row['price_vnd']).model_dump()
+                    report['omni'] = omni
+                    db.execute('UPDATE listings SET moderation_report=? WHERE id=?',
+                               (json.dumps(report, ensure_ascii=False), row['id']))
                 if status == 'sold':
                     expire_claims(db)
                     in_flight = db.execute("SELECT 1 FROM listing_deliveries WHERE listing_id=? AND status IN ('claimed','unknown')", (body,)).fetchone()

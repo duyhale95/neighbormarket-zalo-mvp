@@ -17,6 +17,13 @@ export const moderationSchema = z.object({
   requires_review: z.literal(true),
   ai_status: z.enum(['not_requested', 'unavailable', 'advisory']),
   score_calibrated: z.literal(false),
+  omni: z
+    .object({
+      status: z.enum(['clear', 'flagged', 'error', 'unavailable']),
+      categories: z.array(z.string()),
+      model: z.string(),
+    })
+    .optional(),
 });
 export const listingSchema = z.object({
   id: z.string(),

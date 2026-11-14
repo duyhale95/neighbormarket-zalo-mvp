@@ -20,9 +20,11 @@ class ImageIntakeTests(unittest.TestCase):
             with TestClient(create_intake_app('http://backend','bridge','intake','demo',client=backend,account_id='303',allowed_sender_ids={'202'},images_enabled=True)) as adapter:
                 headers={'X-Intake-Key':'intake','Content-Type':'text/plain','X-Zalo-Account':'303','X-Zalo-Sender':'202','X-Zalo-Thread':'202','X-Zalo-Message':'101','X-Zalo-Thread-Type':'0','X-Zalo-Self':'false'}
                 raw='NM-IMAGE:\nhttps://photo-zalo.zadn.vn/synthetic.jpg'
-                with patch('backend.images.fetch_zalo',return_value=photo()) as fetch:
+                # A valid JPEG may carry large metadata. The normalized copy is small.
+                oversized = photo() + b'\0' * (4 * 1024 * 1024)
+                with patch('backend.images.fetch_zalo',return_value=oversized) as fetch:
                     result=adapter.post('/intake/image',headers=headers,content=raw)
-                    self.assertEqual(result.status_code,200); self.assertIn('Đã lưu ảnh',result.json()['reply'])
+                    self.assertEqual(result.status_code,200); self.assertIn('đã lưu ảnh',result.json()['reply'])
                     self.assertEqual(adapter.post('/intake/image',headers=headers,content=raw).json(),result.json()); self.assertEqual(fetch.call_count,1)
                     for field,value in [('X-Zalo-Self','true'),('X-Zalo-Thread-Type','1')]:
                         self.assertTrue(adapter.post('/intake/image',headers={**headers,field:value},content=raw).json()['ignored'])

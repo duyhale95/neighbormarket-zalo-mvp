@@ -19,25 +19,34 @@ from backend.messages import draft_message
 
 FIELDS=('title','price_vnd','condition')
 LABELS={'title':'tên sản phẩm','price_vnd':'giá','condition':'tình trạng'}
-HELP='Bạn có thể nhắn: ban Tên món | Giá VND | Tình trạng; tim từ khóa; xacnhan MÃ_TIN; daban MÃ_TIN. Đây là luồng nghiệp vụ thử nghiệm, chưa xử lý ảnh.'
+HELP='Dạ, Meo Meo hỗ trợ đăng bán và tìm mua. Bạn có thể nhắn “Bán ghế còn tốt, 800k” hoặc “tìm ghế” ạ.'
 
 
 def parse_action(text: str) -> tuple[str,str]:
     text=text.strip()
     normalized=' '.join(fold(text).split())
+    if normalized.strip(' !.,?') in ('chao', 'xin chao', 'chao meo meo', 'hello', 'hi', 'cam on', 'cam on meo meo'):
+        return 'greeting',''
     if normalized in ('huy nhap','huy ban nhap'): return 'huy',''
     if re.fullmatch(r'NM-[A-F0-9]{12}',text,re.I): return 'detail',text.upper()
-    if normalized in ('ok','xac nhan','xacnhan'): return 'xacnhan',''
-    for prefix,action in [('xac nhan ','xacnhan'),('da ban ','daban'),
-                           ('sua gia ','edit_price'),('sua tieu de ','edit_title')]:
-        if normalized.startswith(prefix):
-            words=len(prefix.split())
+    if normalized.strip(' !.,') in ('ok','xac nhan','xacnhan','xac nhan a','xac nhan nhe'):
+        return 'xacnhan',''
+    for phrase,action in [('xac nhan','xacnhan'),('da ban','daban'),
+                           ('sua gia','edit_price'),('sua tieu de','edit_title'),
+                           ('sua tinh trang','edit_condition')]:
+        if normalized == phrase:
+            return action,''
+        if normalized.startswith(phrase + ' '):
+            words=len(phrase.split())
             return action,text.split(maxsplit=words)[words].strip()
-    if normalized in ('sua gia','sua tieu de'):
-        return ('edit_price' if normalized=='sua gia' else 'edit_title'),''
     parts=text.split(maxsplit=1)
     command=fold(parts[0]).lstrip('/') if parts else ''
-    return command,parts[1].strip() if len(parts)>1 else ''
+    body=parts[1].strip() if len(parts)>1 else ''
+    if command in ('xacnhan', 'daban', 'tim', 'huy') or (command == 'ban' and '|' in body):
+        return command, body
+    if command == 'ban' and (text.startswith('/') or parts[0].casefold() == 'ban'):
+        return command, body
+    return 'chat', text
 
 
 def snapshot(db: sqlite3.Connection, scope: tuple[str,str]) -> dict[str, Any]:
@@ -64,6 +73,8 @@ def deterministic_patch(text: str, previous: dict) -> ListingExtraction | None:
     original=unicodedata.normalize('NFC',text.strip())
     norm=fold(original)
     intent=re.search(r'\b(?:muon ban|can ban|minh ban|toi ban|thanh ly|nhuong lai)\s+(?:(?:chiec|cai|mot)\s+)?',norm)
+    if intent is None and original.casefold().startswith('bán '):
+        intent=re.match(r'ban\s+(?:(?:chiec|cai|mot)\s+)?',norm)
     spans=[]
     # Explicit currency units, or an explicit price label. Do not consume age/count.
     money=re.compile(r'(?<![\w.,-])\d+(?:[.,]\d+)*\s*(?:trieu|tr|nghin|ngan|k)'
@@ -153,17 +164,20 @@ def draft_action(db: sqlite3.Connection, event: Any, command: str, body: str,
             clear_context(db,scope,lid)
         else:
             clear_context(db,scope)
-        return {'listing_id':lid,'status':'cancelled','reply':'Đã hủy bản nháp đang soạn. Tin chưa được gửi BQL.'}
-    if command in ('edit_price','edit_title'):
+        return {'listing_id':lid,'status':'cancelled','reply':'Dạ, mình đã hủy bản nháp.'}
+    if command in ('edit_price','edit_title','edit_condition'):
         if not current['data'].get('values'): raise HTTPException(409,'Không có bản nháp hiện tại để sửa')
         values=dict(current['data']['values'])
         if command=='edit_price':
             price=parse_vnd(body)
             if price is None: raise HTTPException(422,'Giá chưa rõ. Ví dụ: sửa giá 700k')
             values['price_vnd']=price
-        else:
+        elif command == 'edit_title':
             if not 1<=len(body)<=250: raise HTTPException(422,'Tiêu đề từ 1 đến 250 ký tự')
             values['title']=body
+        else:
+            if not 1<=len(body)<=500: raise HTTPException(422,'Tình trạng từ 1 đến 500 ký tự')
+            values['condition']=body
         data={**current['data'],'values':values}
     elif extracted and extracted.intent=='sell':
         if current['revision']!=expected_revision:
@@ -183,6 +197,5 @@ def draft_action(db: sqlite3.Connection, event: Any, command: str, body: str,
         set_context(db,scope,current['listing_id'],data)
         needed=', '.join(LABELS[field] for field in missing)
         return {'status':'incomplete','missing_fields':missing,
-                'reply':f'Bạn vui lòng cung cấp {needed}. Mình đã giữ thông tin bạn vừa gửi. '
-                        'Có thể bổ sung giá/tình trạng hoặc dùng: ban Tên món | Giá VND | Tình trạng.'}
+                'reply':f'Dạ, bạn cho mình thêm {needed} nhé.'}
     return _save_complete(db,scope,current['listing_id'] or 'NM-'+uuid4().hex[:12].upper(),values,data,event.source_channel)
