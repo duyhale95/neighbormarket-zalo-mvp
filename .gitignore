@@ -1,0 +1,6 @@
+.env
+.env.*
+private/
+*session*
+*cookie*
+node_modules/
