@@ -26,14 +26,14 @@ Backend chợ cư dân cho phép tạo bản nháp qua tin nhắn riêng, xác n
 
 ## Chạy trên Windows
 
-Cần Python 3.11+ và PowerShell 7. Tại repository:
+Cần Python 3.11+ và Windows PowerShell 5.1 hoặc PowerShell 7. Tại repository:
 
 ```powershell
-python -m venv .venv
+if (-not (Test-Path .venv\Scripts\python.exe)) { python -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 $env:ZALO_COMMUNITY_ID = 'demo'
 $env:ZALO_LEGIT_GROUP_ID = 'mock-legit-group'
-pwsh -File .\run-local.ps1
+.\run-local.ps1
 ```
 
 Mở [Swagger trên localhost](http://127.0.0.1:8000/docs). Script tạo các khóa demo khác nhau trong `private/local-config.json` nếu file chưa tồn tại và dùng `private/market.db`. Dùng bridge key cho `/events` và API delivery dành cho bridge; admin key cho `/listings`, review, danh sách delivery và đối soát. BQL có thể dùng dashboard Next.js theo hướng dẫn ở đầu README hoặc gọi API qua Swagger. Không chia sẻ hoặc commit file private và không dùng dữ liệu thật trong demo mock.

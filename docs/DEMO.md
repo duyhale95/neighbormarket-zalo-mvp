@@ -6,15 +6,15 @@ Bộ kiểm thử chạy toàn bộ nghiệp vụ với HTTP in-process và bộ
 
 ## 1. Chuẩn bị trên Windows
 
-Cần Python 3.11+ và PowerShell 7. Trong PowerShell tại repository:
+Cần Python 3.11+ và Windows PowerShell 5.1 hoặc PowerShell 7. Trong PowerShell tại repository:
 
 ```powershell
 Set-Location C:\Users\Admin\neighbormarket-zalo-mvp
-python -m venv .venv
+if (-not (Test-Path .venv\Scripts\python.exe)) { python -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 $env:ZALO_COMMUNITY_ID = 'demo'
 $env:ZALO_LEGIT_GROUP_ID = 'mock-legit-group'
-pwsh -File .\run-local.ps1
+.\run-local.ps1
 ```
 
 Giữ cửa sổ đang chạy mở và truy cập http://127.0.0.1:8000/docs. `run-local.ps1` tạo hai khóa demo khác nhau tại `private/local-config.json`, thiết lập database `private/market.db`, rồi chạy server chỉ trên localhost. Nhập khóa phù hợp trong Swagger khi được yêu cầu: `bridge_key` cho `/events` và API claim/sent/failure, `admin_key` cho danh sách và duyệt. Không chia sẻ hoặc commit file này. Trong ví dụ mock, group ID là nhãn giả, không phải nhóm Zalo thật.

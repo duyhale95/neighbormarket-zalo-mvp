@@ -1,5 +1,17 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+function New-DemoKey {
+    # Instance RNG and BitConverter work on Windows PowerShell 5.1 and PowerShell 7.
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    }
+    finally {
+        $rng.Dispose()
+    }
+    return [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+}
 $pythonPath = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $pythonPath)) {
     throw 'Python virtual environment not found. Run: python -m venv .venv; .\.venv\Scripts\python.exe -m pip install -r requirements.txt'
@@ -8,8 +20,8 @@ $configPath = Join-Path $PSScriptRoot 'private/local-config.json'
 if (-not (Test-Path -LiteralPath $configPath)) {
     New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'private') -Force | Out-Null
     $config = @{
-        bridge_key = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-        admin_key = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+        bridge_key = New-DemoKey
+        admin_key = New-DemoKey
     }
     $config | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding utf8
 }

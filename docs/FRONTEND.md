@@ -6,16 +6,16 @@ log in to Deplao or Zalo, send group messages, claim deliveries or retry sends.
 
 ## Windows setup
 
-Requirements: Python 3.11+, PowerShell 7, Node.js 22.13+ (tested with 24.21.0), npm.
+Requirements: Python 3.11+, Windows PowerShell 5.1 or PowerShell 7, Node.js 22.13+ (tested with 24.21.0), npm.
 
 Terminal 1, at `C:\Users\Admin\neighbormarket-zalo-mvp`:
 
 ```powershell
-python -m venv .venv # only if missing
+if (-not (Test-Path .venv\Scripts\python.exe)) { python -m venv .venv }
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 $env:ZALO_COMMUNITY_ID = 'demo'
 $env:ZALO_LEGIT_GROUP_ID = 'mock-legit-group' # fake label; use permitted ID for a future live test
-pwsh -File .\run-local.ps1
+.\run-local.ps1
 ```
 
 Configure the group before approval. Existing backend compatibility allows an
@@ -53,6 +53,22 @@ For the production server: `npm run build` then `npm run start`. Open
 `http://127.0.0.1:3000` and `/bql/login`. Use the configured BQL demo password;
 never enter the backend API key into the browser. Missing settings lock the
 dashboard and show setup instructions. Restart after environment changes.
+
+### Existing checkout and Windows startup errors
+
+- If `neighbormarket-demo` already exists, reuse it; do not clone over or delete
+  it. Check `git status --short --branch`. With a clean working tree on this
+  feature branch, use `git pull --ff-only origin feat/vinhomes-sunrise-landing-bql-ui`.
+  Preserve local changes before switching branches or updating.
+- If `.venv\Scripts\python.exe` already runs, skip `python -m venv .venv`.
+  Recreating an active environment can fail because its Python executable is in
+  use. Calling its Python directly does not require activation.
+- If `pwsh` is not recognized, run `.\run-local.ps1` in the existing Windows
+  PowerShell window. The launcher supports Windows PowerShell 5.1 and PowerShell
+  7, and preserves existing `private/local-config.json` and database files.
+- If script execution is blocked, set
+  `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned` in that
+  window, then run `.\run-local.ps1` again.
 
 ## Routes and integration
 
