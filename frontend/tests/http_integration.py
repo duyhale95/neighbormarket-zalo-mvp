@@ -1,4 +1,5 @@
 """Run after npm run build. Exercises the real Next.js BFF and FastAPI on isolated ports."""
+import base64
 import os
 import shutil
 import subprocess
@@ -7,6 +8,9 @@ import tempfile
 import time
 from pathlib import Path
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from backend_fixture import MEDIA_PENDING, MEDIA_STUCK, synthetic_photo
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / 'frontend'
@@ -38,6 +42,129 @@ def ready(url, process):
     raise RuntimeError('QA server readiness timeout')
 
 
+def encoded(kind='clear', shade=0):
+    return base64.b64encode(synthetic_photo(kind, shade)).decode()
+
+
+def anonymous_media_checks(browser, headers):
+    rows = httpx.get(BACKEND+'/listings?community_id=demo', headers={'X-API-Key':ADMIN}).json()
+    media = next(row for row in rows if row['title'] == MEDIA_PENDING)
+    image = media['images'][0]['id']
+    check('anonymous image preview denied', browser.get(f'/api/bql/images/{image}').status_code == 401)
+    check('anonymous image upload denied', browser.post(f"/api/bql/listings/{media['id']}/images",
+          headers=headers, json={'image_base64':encoded()}).status_code == 401)
+    check('anonymous image recheck denied',
+          browser.post(f'/api/bql/images/{image}/recheck', headers=headers, json={}).status_code == 401)
+
+
+def media_checks(browser, headers):
+    def listing(title=None, item=None):
+        return next(row for row in browser.get('/api/bql/listings').json()
+                    if row['title'] == title or row['id'] == item)
+    responses = []
+    def post(path, **kwargs):
+        response = browser.post(path, headers=kwargs.pop('headers', headers), **kwargs)
+        responses.append(response)
+        return response
+    media = listing(MEDIA_PENDING)
+    image = media['images'][0]['id']
+    preview = browser.get(f'/api/bql/images/{image}')
+    responses.append(preview)
+    check('authenticated preview streams private JPEG through BFF',
+          preview.status_code == 200 and preview.headers['content-type'] == 'image/jpeg'
+          and preview.content[:2] == b'\xff\xd8' and 'no-store' in preview.headers['cache-control']
+          and preview.headers.get('x-content-type-options') == 'nosniff')
+    other = httpx.get(BACKEND+'/listings?community_id=other', headers={'X-API-Key':ADMIN}).json()[0]['images'][0]['id']
+    check('cross-community image preview blocked', browser.get(f'/api/bql/images/{other}').status_code == 404)
+    check('cross-community image recheck blocked', post(f'/api/bql/images/{other}/recheck', json={}).status_code == 404)
+    check('non-hex image path is not proxied', browser.get('/api/bql/images/not-an-image-id').status_code == 404)
+    upload = f"/api/bql/listings/{media['id']}/images"
+    payload = {'image_base64':encoded('clear', 33)}
+    check('cross-site image upload denied (CSRF)',
+          post(upload, headers={'Origin':'https://evil.example'}, json=payload).status_code == 403)
+    check('cross-site image recheck denied (CSRF)',
+          post(f'/api/bql/images/{image}/recheck', headers={'Origin':'https://evil.example'}, json={}).status_code == 403)
+    check('image upload requires JSON',
+          post(upload, headers={**headers, 'Content-Type':'text/plain'}, content='x').status_code == 415)
+    check('caller cannot choose image community', post(upload, json={**payload, 'community_id':'other'}).status_code == 422)
+    oversized = b'{"image_base64":"' + b'A' * (6 * 1024 * 1024) + b'"}'
+    check('oversized image body rejected before backend',
+          post(upload, headers={**headers, 'Content-Type':'application/json'}, content=oversized).status_code == 413)
+    check('recheck body bounded to small JSON',
+          post(f'/api/bql/images/{image}/recheck', headers={**headers, 'Content-Type':'application/json'},
+               content=b'{"x":"' + b'a' * 9000 + b'"}').status_code == 413)
+    check('recheck accepts no extra fields', post(f'/api/bql/images/{image}/recheck', json={'status':'clear'}).status_code == 422)
+    old_token = media['image_review_token']
+    uploaded = post(upload, json=payload)
+    check('BQL upload through BFF normalizes and checks image',
+          uploaded.status_code == 200 and uploaded.json()['status'] == 'clear')
+    after = listing(item=media['id'])
+    check('upload adds image and rotates review token',
+          len(after['images']) == 3 and after['image_review_token'] != old_token)
+    review = f"/api/bql/listings/{media['id']}/review"
+    reason = 'QA: đã xem trực tiếp ba ảnh màu tổng hợp, không phải dữ liệu thật'
+    check('approval without image review token refused',
+          post(review, json={'action':'approve', 'reason':reason, 'manual_image_review':True}).status_code == 409)
+    check('approval with pre-upload token refused',
+          post(review, json={'action':'approve', 'reason':reason, 'image_review_token':old_token,
+                             'manual_image_review':True}).status_code == 409)
+    unclear = next(row for row in after['images'] if row['status'] == 'unavailable')
+    check('recheck through BFF succeeds', post(f"/api/bql/images/{unclear['id']}/recheck", json={}).status_code == 200)
+    rechecked = listing(item=media['id'])
+    revision = next(row for row in rechecked['images'] if row['id'] == unclear['id'])['revision']
+    check('recheck changes image revision and review token',
+          revision != unclear['revision'] and rechecked['image_review_token'] != after['image_review_token'])
+    check('token from before recheck is stale',
+          post(review, json={'action':'approve', 'reason':reason, 'image_review_token':after['image_review_token'],
+                             'manual_image_review':True}).status_code == 409)
+    token = rechecked['image_review_token']
+    check('unclear image requires manual evidence',
+          post(review, json={'action':'approve', 'reason':reason, 'image_review_token':token}).status_code == 409)
+    check('manual evidence flag must be boolean',
+          post(review, json={'action':'approve', 'reason':reason, 'image_review_token':token,
+                             'manual_image_review':'yes'}).status_code == 422)
+    stuck = listing(MEDIA_STUCK)
+    check('pending image blocks approval even with manual evidence',
+          post(f"/api/bql/listings/{stuck['id']}/review", json={'action':'approve', 'reason':reason,
+               'image_review_token':stuck['image_review_token'], 'manual_image_review':True}).status_code == 409)
+    check('in-flight image cannot be rechecked yet',
+          post(f"/api/bql/images/{stuck['images'][0]['id']}/recheck", json={}).status_code == 409)
+    approved = post(review, json={'action':'approve', 'reason':reason, 'image_review_token':token,
+                                  'manual_image_review':True})
+    check('manual image approval queues delivery',
+          approved.status_code == 200 and approved.json()['delivery_status'] == 'queued')
+    check('approved listing refuses silent new photo', post(upload, json={'image_base64':encoded('clear', 60)}).status_code == 409)
+    check('approved listing refuses image recheck', post(f'/api/bql/images/{image}/recheck', json={}).status_code == 409)
+    jobs = browser.get('/api/bql/deliveries').json()
+    parts = next(row for row in jobs if row['listing_id'] == media['id'])['parts']
+    check('approval creates ordered cover/additional/code parts',
+          [p['kind'] for p in parts] == ['cover_photo_with_caption', 'additional_photo', 'additional_photo', 'listing_code']
+          and all(p['status'] == 'queued' for p in parts))
+    multipart = next(row for row in jobs if row['parts'] and row['status'] == 'unknown')
+    unknown = next(p for p in multipart['parts'] if p['status'] == 'unknown')
+    queued = next(p for p in multipart['parts'] if p['status'] == 'queued')
+    reconcile = f"/api/bql/deliveries/{multipart['id']}/reconcile"
+    evidence = {'decision':'sent', 'reason':'QA: thấy receipt giả lập của ảnh bìa', 'sent_message_id':'mock-observed-cover'}
+    check('multipart reconcile requires part id', post(reconcile, json=evidence).status_code == 422)
+    check('multipart reconcile rejects a non-unknown part',
+          post(reconcile, json={**evidence, 'part_id':queued['id']}).status_code == 409)
+    check('multipart sent decision requires receipt',
+          post(reconcile, json={k: v for k, v in {**evidence, 'part_id':unknown['id']}.items()
+                                if k != 'sent_message_id'}).status_code == 422)
+    resolved = post(reconcile, json={**evidence, 'part_id':unknown['id']})
+    check('reconciled cover resumes queue without replay',
+          resolved.status_code == 200 and resolved.json()['status'] == 'queued')
+    after_parts = next(row for row in browser.get('/api/bql/deliveries').json() if row['id'] == multipart['id'])['parts']
+    check('cover receipt recorded as manual; later parts still queued',
+          after_parts[0]['status'] == 'sent' and after_parts[0]['transport_mode'] == 'manual'
+          and after_parts[0]['sent_message_id'] == 'mock-observed-cover'
+          and all(p['status'] == 'queued' for p in after_parts[1:]))
+    check('resolved delivery cannot be reconciled twice',
+          post(reconcile, json={**evidence, 'part_id':unknown['id']}).status_code == 409)
+    check('no media response leaks the admin credential',
+          all(ADMIN not in str(r.headers) and ADMIN.encode() not in r.content for r in responses))
+
+
 def run():
     (ROOT / 'work').mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='http-qa-', dir=ROOT / 'work') as temp:
@@ -66,6 +193,7 @@ def run():
             with httpx.Client(base_url=ORIGIN, timeout=20) as browser:
                 check('anonymous data request denied', browser.get('/api/bql/listings').status_code == 401)
                 check('protected page redirects', browser.get('/bql').status_code == 307)
+                anonymous_media_checks(browser, headers)
                 check('login requires same origin', browser.post('/api/auth/login',json={'password':PASSWORD}).status_code == 403)
                 check('incorrect password denied', browser.post('/api/auth/login',headers=headers,json={'password':'wrong'}).status_code == 401)
                 login = browser.post('/api/auth/login',headers=headers,json={'password':PASSWORD})
@@ -112,6 +240,7 @@ def run():
                 updated = browser.get('/api/bql/deliveries').json()
                 check('reconciliation is labelled manual without requeue',
                       next(row for row in updated if row['id'] == unknown['id'])['transport_mode'] == 'manual')
+                media_checks(browser, headers)
                 check('BFF exposes no arbitrary backend proxy', browser.get('/api/bql/events').status_code == 404)
                 chunks = (FRONTEND/'.next/static').rglob('*.js')
                 check('admin credential absent from browser JS', all(ADMIN.encode() not in p.read_bytes() for p in chunks))

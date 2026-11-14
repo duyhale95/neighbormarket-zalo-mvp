@@ -4,6 +4,13 @@ import { AlertTriangle, ArrowRight, Check, RefreshCw, Send, X } from 'lucide-rea
 import type { Delivery } from '@/lib/contracts';
 import { useData, mutate } from './use-data';
 import { date, Empty, labels, Notice, Status, evidenceLabels } from './shared';
+const partLabels: Record<string, string> = {
+  post_text: 'Bài text',
+  cover_photo_with_caption: 'Ảnh bìa kèm nội dung',
+  additional_photo: 'Ảnh bổ sung',
+  listing_code: 'Mã tin',
+  sold_notice: 'Thông báo đã bán',
+};
 function ReconcileDialog({
   delivery,
   onClose,
@@ -68,6 +75,13 @@ function ReconcileDialog({
       </div>
       <h2 id="reconcile-title">Xác minh kết quả gửi</h2>
       <p className="listing-code">Tin {delivery.listing_id}</p>
+      {unknownPart && (
+        <p className="field-help">
+          Đối soát riêng phần <strong>{partLabels[unknownPart.kind]}</strong> (vị trí{' '}
+          {unknownPart.position + 1}, ID {unknownPart.id}). Phần đã gửi không bị gửi lại; phần sau
+          chỉ tiếp tục khi phần này được xác minh đã gửi.
+        </p>
+      )}
       <Notice message="Dừng publisher cũ và kiểm tra hội thoại nhóm trước khi quyết định. Không gửi lại khi chưa biết lần gửi trước có thành công hay không." />
       <form onSubmit={submit}>
         <label htmlFor="decision">Kết quả đã xác minh</label>
@@ -81,7 +95,9 @@ function ReconcileDialog({
         </select>
         {decision === 'sent' && (
           <>
-            <label htmlFor="sent-id">ID tin nhắn gửi (nếu có)</label>
+            <label htmlFor="sent-id">
+              {unknownPart ? 'ID tin nhắn của phần này *' : 'ID tin nhắn gửi (nếu có)'}
+            </label>
             <input
               id="sent-id"
               value={messageId}
@@ -232,7 +248,8 @@ export function DeliveryMonitor() {
                           </summary>
                           {row.parts.map((part) => (
                             <p className="field-help" key={part.id}>
-                              <strong>{part.kind}</strong> · {labels[part.status] || part.status}
+                              <strong>{partLabels[part.kind] || part.kind}</strong> ·{' '}
+                              {labels[part.status] || part.status}
                               <br />
                               ID phần: {part.id}
                               <br />
