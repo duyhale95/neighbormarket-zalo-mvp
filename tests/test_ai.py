@@ -136,6 +136,12 @@ class OpenAIContractTests(unittest.TestCase):
             self.assertIsNone(extract_listing('text'))
             post.assert_not_called()
 
+    def test_address_and_apartment_details_are_flagged(self):
+        for content in ('căn 1203, tòa A', 'Căn hộ 15B', 'phòng 202',
+                        'Số 12 đường Nguyễn Huệ', 'chung cư A1'):
+            with self.subTest(content=content):
+                self.assertIn('sensitive_information', moderation_flags('Ghế', content))
+
     def test_moderation_flags_are_conservative_signals(self):
         self.assertIn('sensitive_information', moderation_flags('Ghế', 'Liên hệ a@example.com'))
         self.assertIn('spam', moderation_flags('Ghế', 'xem https://example.com'))

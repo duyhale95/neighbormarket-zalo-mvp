@@ -10,7 +10,9 @@ def moderation_flags(title: str, condition: str) -> list[str]:
     flags = []
     if (re.search(r'(?<!\d)(?:\+?84|0)[\s.()-]*(?:\d[\s.()-]*){8,10}(?!\d)', content)
             or re.search(r'\b[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}\b', content)
-            or re.search(r'(?<!\d)\d{9,12}(?!\d)', content)):
+            or re.search(r'(?<!\d)\d{9,12}(?!\d)', content)
+            or re.search(r'\b(?:can(?: ho)?|phong|toa|tang|block|chung cu)\s*[:#-]?\s*[a-z0-9]{1,6}\b', folded)
+            or re.search(r'\bso\s+\d+[a-z]?\s+duong\s+\w+', folded)):
         flags.append('sensitive_information')
     if re.search(r'\b(?:dit me|du me|deo|fuck|shit)\b', folded):
         flags.append('profanity')
