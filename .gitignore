@@ -11,3 +11,7 @@ __pycache__/
 *.db-wal
 *.db-shm
 .superpowers/
+.next/
+*.tsbuildinfo
+frontend/test-results/
+work/
