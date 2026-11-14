@@ -1,6 +1,13 @@
 .env
 .env.*
+!.env.example
 private/
 *session*
 *cookie*
 node_modules/
+__pycache__/
+.venv/
+*.db
+*.db-wal
+*.db-shm
+.superpowers/
