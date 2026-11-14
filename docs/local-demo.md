@@ -1,5 +1,7 @@
 # Bắt đầu local — bản backend + Deplao text
 
+Cập nhật: Gemini text tự nhiên đã được bổ sung; xem [hướng dẫn mới](natural-text.md). Phần dưới mô tả luồng lệnh xác định vẫn được hỗ trợ.
+
 ## Đã có trong phiên bản này
 Backend lưu SQLite, dashboard `/admin`, endpoint text `/bridge/zalo`, script xuất workflow riêng tư cho người thử đã xác nhận. Chưa tích hợp AI extraction/ảnh; workflow này dùng lệnh xác định để nghiệm thu đường truyền và nghiệp vụ. Workflow Gemini cũ là một luồng khác, không tự lưu dữ liệu vào đây.
 

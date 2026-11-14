@@ -2,6 +2,12 @@
 
 Trợ lý chợ cư dân hoạt động qua chat riêng Zalo; quản trị qua dashboard.
 
+## Mới: đăng bán bằng câu tự nhiên
+
+Backend có thể dùng Gemini để hiểu “Mình muốn thanh lý ghế làm việc 500k”, hỏi thông tin còn thiếu và giữ bản nháp qua nhiều lượt. Người bán kiểm tra, xác nhận; BQL duyệt như trước. Không cần đổi workflow backend hiện tại. Xem [hướng dẫn và cấu hình](docs/natural-text.md).
+
+Đã kiểm thử provider Gemini thật bằng dữ liệu tổng hợp và các kiểm tra nghiệp vụ. Chưa xác nhận chat Zalo thật cho tính năng natural text mới; ảnh và tìm kiếm ngữ nghĩa chưa triển khai. Các mô tả chặng text-only bên dưới nói về nền nghiệp vụ ban đầu.
+
 ## Bắt đầu chạy backend MVP
 
 **Bản local mới:** mở [bàn duyệt tin](http://127.0.0.1:8000/admin) sau khi chạy script. Xem [hướng dẫn Deplao và demo local](docs/local-demo.md). Có cầu nối text `/bridge/zalo` và công cụ xuất workflow riêng tư; chưa tự nhập hoặc bật workflow trong Deplao.
@@ -25,7 +31,7 @@ Mở [API thử nghiệm local](http://127.0.0.1:8000/docs) hoặc [dashboard BQ
 python -m unittest discover -s tests -v
 ```
 
-Trạng thái: SQLite, dashboard duyệt tin, cầu nối Deplao text, lệnh xác định và tìm kiếm từ khóa; chưa có AI extraction, xử lý ảnh, Supabase/pgvector, login BQL production hoặc deploy VPS. Test AI dự kiến được giữ riêng ở `docs/planned-tests`, chưa thuộc tính năng đã triển khai.
+Trạng thái: SQLite, dashboard duyệt tin, cầu nối Deplao text, trích xuất text tự nhiên bằng Gemini và tìm kiếm từ khóa; chưa có xử lý ảnh, Supabase/pgvector, login BQL production hoặc deploy VPS. Test AI dự kiến được giữ riêng ở `docs/planned-tests`, chưa thuộc tính năng đã triển khai.
 
 ## Đã làm
 - Chốt hướng MVP trên Zalo cá nhân, sử dụng Deplao và Gemini.
@@ -35,7 +41,7 @@ Trạng thái: SQLite, dashboard duyệt tin, cầu nối Deplao text, lệnh x�
 
 ## Đang làm
 - Đã có bản brief/PRD và UI flow đầu tiên trong docs; tiếp tục lấy phản hồi.
-- Tiếp theo: nối backend với workflow, AI extraction và dashboard BQL.
+- Đã nối backend với workflow và dashboard; đang nghiệm thu Gemini text qua Zalo, tiếp theo là ảnh.
 - Kiểm tra nhận tin và phản hồi tự động qua Zalo.
 
 ## Đang vướng

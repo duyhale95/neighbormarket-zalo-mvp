@@ -20,3 +20,9 @@
 - Chưa xác nhận vòng Zalo thật của workflow backend mới.
 
 Kế hoạch dài hạn ở `docs/superpowers/plans/2026-11-14-local-mvp-approval.md`. Tài liệu kế hoạch không phải bằng chứng tính năng đã hoàn tất.
+
+## Cập nhật: Gemini text tự nhiên
+- Đã thêm trích xuất text, bản nháp nhiều lượt, sửa trước xác nhận và huy nhap.
+- 22 unittest, UI smoke và Gemini backend smoke dữ liệu tổng hợp đã đạt.
+- Backend local đã bật natural_text_enabled; giữ workflow hiện có. Chưa kiểm chứng natural text bằng tin Zalo thật.
+- Ảnh, semantic search và các phần production chưa triển khai.

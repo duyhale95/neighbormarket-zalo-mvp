@@ -35,15 +35,15 @@ def normalize(value):
     return ''.join(c for c in value if unicodedata.category(c) != 'Mn')
 
 
-def create_app(db_path, bridge_key, admin_key):
+def create_app(db_path, bridge_key, admin_key, extractor=None):
     if not bridge_key or not admin_key or bridge_key == admin_key:
         raise ValueError('Configure two different nonempty API keys')
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
-    def database():
-        db = sqlite3.connect(db_path, timeout=15)
+    def database(timeout=15):
+        db = sqlite3.connect(db_path, timeout=timeout)
         db.row_factory = sqlite3.Row
         try:
             with db:
@@ -67,9 +67,20 @@ def create_app(db_path, bridge_key, admin_key):
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS listings_scope ON listings(community_id, status);
+            CREATE TABLE IF NOT EXISTS conversations (
+                community_id TEXT NOT NULL, sender_id TEXT NOT NULL, listing_id TEXT NOT NULL,
+                data TEXT NOT NULL, revision INTEGER NOT NULL,
+                PRIMARY KEY(community_id,sender_id)
+            );
+            CREATE TABLE IF NOT EXISTS draft_epochs (
+                community_id TEXT NOT NULL, sender_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+                PRIMARY KEY(community_id,sender_id)
+            );
         ''')
 
     app = FastAPI(title='NeighborMarket local MVP', version='0.1.0')
+    from backend.natural import NaturalIntake
+    intake = NaturalIntake(database, extractor) if extractor else None
 
     def authenticate(expected):
         def check(x_api_key: str = Header(default='')):
@@ -79,7 +90,7 @@ def create_app(db_path, bridge_key, admin_key):
 
     @app.get('/health')
     def health():
-        return {'status': 'ok', 'mode': 'local-mvp'}
+        return {'status': 'ok', 'mode': 'local-mvp', 'natural_text_enabled': intake is not None}
 
     @app.get('/admin', include_in_schema=False)
     def admin_page():
@@ -111,6 +122,13 @@ def create_app(db_path, bridge_key, admin_key):
     def event(event: Event):
         if event.is_self or event.thread_type != 'private':
             return {'ignored': True, 'reply': ''}
+        text = event.text.strip()
+        command, _, body = text.partition(' ')
+        command, body = normalize(command), body.strip()
+        cancelling = normalize(text) == 'huy nhap'
+        deterministic = command in ('xacnhan', 'daban', 'tim') or (command == 'ban' and '|' in body) or cancelling
+        if intake and not deterministic:
+            return intake.handle(event)
         with database() as db:
             db.execute('BEGIN IMMEDIATE')
             identity = (event.community_id, event.sender_id, event.event_id)
@@ -121,7 +139,19 @@ def create_app(db_path, bridge_key, admin_key):
             command, _, body = text.partition(' ')
             command = normalize(command)
             body = body.strip()
-            if command == 'ban':
+            if cancelling:
+                if intake:
+                    intake.invalidate((event.community_id, event.sender_id))
+                db.execute('INSERT INTO draft_epochs VALUES (?,?,1) ON CONFLICT(community_id,sender_id) DO UPDATE SET epoch=epoch+1',
+                           (event.community_id, event.sender_id))
+                previous = db.execute('SELECT listing_id FROM conversations WHERE community_id=? AND sender_id=?',
+                                      (event.community_id, event.sender_id)).fetchone()
+                if previous:
+                    db.execute("UPDATE listings SET status='cancelled' WHERE id=? AND community_id=? AND seller_id=? AND status='draft'",
+                               (previous['listing_id'], event.community_id, event.sender_id))
+                db.execute('DELETE FROM conversations WHERE community_id=? AND sender_id=?', (event.community_id, event.sender_id))
+                result = {'reply': 'Đã hủy bản nháp hoặc yêu cầu tạo nháp đang xử lý (nếu có). Bạn có thể gửi thông tin món mới.'}
+            elif command == 'ban':
                 parts = [p.strip() for p in body.split('|')]
                 if len(parts) != 3 or not all(parts) or not parts[1].isascii() or not parts[1].isdigit():
                     raise HTTPException(422, 'Dùng: ban Tên món | Giá nguyên VND | Tình trạng')
@@ -131,17 +161,28 @@ def create_app(db_path, bridge_key, admin_key):
                 id = 'NM-' + uuid4().hex[:12].upper()
                 db.execute('INSERT INTO listings(id,community_id,seller_id,title,price_vnd,condition,status) VALUES (?,?,?,?,?,?,?)',
                            (id, event.community_id, event.sender_id, title, int(price), condition, 'draft'))
+                db.execute('DELETE FROM conversations WHERE community_id=? AND sender_id=?',
+                           (event.community_id, event.sender_id))
+                db.execute('INSERT INTO draft_epochs VALUES (?,?,1) ON CONFLICT(community_id,sender_id) DO UPDATE SET epoch=epoch+1',
+                           (event.community_id, event.sender_id))
                 result = {'listing_id': id, 'status': 'draft',
                           'reply': f'Bản nháp {id}: {title}, {int(price):,}đ, {condition}. Nhắn xacnhan {id} để gửi BQL duyệt.'}
             elif command in ('xacnhan', 'daban'):
                 row = db.execute('SELECT * FROM listings WHERE id=? AND community_id=? AND seller_id=?',
                                  (body, event.community_id, event.sender_id)).fetchone()
                 if not row:
+                    partial = db.execute('SELECT listing_id FROM conversations WHERE community_id=? AND sender_id=? AND listing_id=?',
+                                         (event.community_id, event.sender_id, body)).fetchone()
+                    if partial:
+                        raise HTTPException(422, 'Bản nháp chưa đủ tên món, giá và tình trạng. Hãy bổ sung trước khi xác nhận.')
                     raise HTTPException(404, 'Listing not found')
                 required, status = ('draft', 'pending') if command == 'xacnhan' else ('approved', 'sold')
                 if row['status'] != required:
                     raise HTTPException(409, 'Listing is not in the required state')
                 db.execute('UPDATE listings SET status=? WHERE id=?', (status, body))
+                if command == 'xacnhan':
+                    db.execute('DELETE FROM conversations WHERE community_id=? AND sender_id=? AND listing_id=?',
+                               (event.community_id, event.sender_id, body))
                 result = {'listing_id': body, 'status': status,
                           'reply': 'Đã gửi BQL duyệt.' if status == 'pending' else 'Đã đánh dấu bán xong.'}
             elif command == 'tim':
@@ -179,8 +220,7 @@ def create_app(db_path, bridge_key, admin_key):
             return await run_in_threadpool(event, payload)
         except HTTPException as error:
             # Business errors become safe user-facing replies; auth never enters here.
-            replies = {404:'Không tìm thấy tin thuộc quyền của bạn. Hãy kiểm tra mã tin.',
-                       409:'Tin không ở trạng thái phù hợp để thực hiện thao tác này.'}
+            replies = {404:'Không tìm thấy tin thuộc quyền của bạn. Hãy kiểm tra mã tin.'}
             return {'business_status':error.status_code,
                     'reply':replies.get(error.status_code, str(error.detail))}
 
@@ -188,5 +228,8 @@ def create_app(db_path, bridge_key, admin_key):
 
 
 def from_environment():
+    from backend.ai_text import GeminiTextExtractor
+    key, model = os.getenv('GEMINI_API_KEY'), os.getenv('GEMINI_MODEL')
+    extractor = GeminiTextExtractor(key, model) if key and model else None
     return create_app(os.getenv('DATABASE_PATH', 'private/market.db'),
-                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'])
+                      os.environ['BRIDGE_API_KEY'], os.environ['ADMIN_API_KEY'], extractor=extractor)
